@@ -92,3 +92,93 @@ pub unsafe extern "C" fn minimuxer_remove_provisioning_profile(id: *mut libc::c_
 
     Errors::Success.into()
 }
+
+#[no_mangle]
+/// Removes provisioning profiles excluding the passed ids
+/// NOTE: Unfinished, WIP
+/// # Safety
+/// Don't be stupid
+pub unsafe extern "C" fn minimuxer_remove_inactive_profiles(ids: *const *const libc::c_char, count: c_int) -> c_int {
+    if !test_device_connection() {
+        return Errors::NoConnection.into();
+    }
+
+    let device = match idevice::get_first_device() {
+        Ok(d) => d,
+        Err(_) => return Errors::NoDevice.into(),
+    };
+
+    let mis_client = match device.new_misagent_client("minimuxer-install-prov") {
+        Ok(m) => m,
+        Err(_) => {
+            return Errors::CreateInstproxy.into();
+        }
+    };
+
+    let mut i: i32 = 0;
+    while i != count {
+        let id = std::ffi::CStr::from_ptr(*ids.add(i.try_into().unwrap()));
+        let id_str = id.to_str().unwrap();
+        println!("Rust ID: {}", id_str); // Just to confirm we received the correct Swift strings
+        i += 1;
+    }
+
+    // Get all certs from misagent service, so we can check against them
+    let all_ids = match mis_client.copy(false) {
+        Ok(m) => m,
+        Err(_) => {
+            return Errors::ProfileRemove.into();
+        }
+    };
+
+    // Get array size, otherwise we can't iter over the plist at all(?)
+    println!("all_ids plist array size: {:?}", all_ids.clone().array_get_size().unwrap());
+    let p_size = match all_ids.clone().array_get_size() {
+        Ok(m) => m,
+        Err(_) => {
+            return Errors::ProfileRemove.into();
+        }
+    };
+
+    println!("Before loop");
+    for i in 0..p_size {
+        // Attempt to get the cert
+        let cert = match all_ids.array_get_item(i) {
+            Ok(c) => c,
+            Err(_) => {
+                // Just 'log' error and return error, otherwise iOS crashes
+                println!("Error getting cert");
+                return Errors::ProfileRemove.into();
+            }
+        };
+        // If we made it here, presume success, now try to get the cert data
+        let cert_data = match cert.get_data_val() {
+            Ok(d) => d,
+            Err(_) => {
+                return Errors::ProfileRemove.into();
+            }
+        };
+        // 'log' length of data to prove there is something there
+        println!("Cert #{}: {:?}", i, cert_data.len());
+
+        // TODO: Actual parsing of the data
+        /* Current explanation of cert data, no clue how to do this in Rust, but here goes..
+         * First we have to actually extract the plist xml data from cert_data above
+         * As far as I have seen, we can skip the first 62 bytes of data, and then read up until
+         * b"</plist>" (after the plist is the cert signature, I *presume*, but we don't need that
+         *
+         * All we need to do is then go through each cert, and compare with the ids we were passed
+         * from Swift. If the cert's bundle id isn't in the passed Swift, we delete it.
+         *
+         * TODO: Fix duplicate certificates being stored on device
+         * Check for the *earliest* cert we can, and delete all the older ones, *if* possible.
+         * Haven't checked libimobiledevice, so unsure if we can remove certs based off UUID or
+         * something other than bundle id.
+         * */
+    }
+
+    println!("Got through minimuxer, ggez");
+
+    Errors::Success.into()
+}
+
