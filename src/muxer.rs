@@ -18,8 +18,6 @@ use crate::{errors::Errors, heartbeat::start_beat, raw_packet::RawPacket};
 
 const LISTEN_PORT: u16 = 27015;
 
-static STARTED: AtomicBool = AtomicBool::new(false);
-
 pub fn listen(pairing_file: Plist) {
     std::thread::Builder::new()
         .name("muxer".to_string())
@@ -216,6 +214,8 @@ pub unsafe extern "C" fn minimuxer_c_start(
     pairing_file: *mut libc::c_char,
     log_path: *mut libc::c_char,
 ) -> libc::c_int {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+
     if STARTED.load(Ordering::Relaxed) {
         info!("Already started minimuxer, skipping");
         return 0;
