@@ -1,7 +1,7 @@
 use libc::c_char;
 use log::info;
 use simplelog::{ColorChoice, ConfigBuilder, LevelFilter, TermLogger, TerminalMode};
-use std::ffi::{CStr, CString};
+use std::ffi::{CString};
 use std::io::{self, Write};
 use std::process::Command;
 use std::sync::Once;

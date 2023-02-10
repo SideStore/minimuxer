@@ -118,7 +118,7 @@ pub unsafe extern "C" fn minimuxer_remove_provisioning_profiles(ids: *mut libc::
     let c_str = std::ffi::CStr::from_ptr(ids);
 
     let ids = ok_or!(c_str.to_str(), return Errors::FunctionArgs.into()).to_string();
-    let ids = ids.split(",");
+    let ids = ids.split(',');
 
     if !test_device_connection() {
         return Errors::NoConnection.into();

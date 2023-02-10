@@ -49,7 +49,7 @@ pub fn test_device_connection() -> bool {
     #[cfg(test)]
     {
         log::info!("Skipping device connection test since we're in a test");
-        return true;
+        true
     }
 
     #[cfg(not(test))]
