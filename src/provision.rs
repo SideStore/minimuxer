@@ -2,10 +2,13 @@
 
 use libc::{c_int, c_uint};
 use log::{error, info};
+use plist::Value;
 use plist_plus::Plist;
-use rusty_libimobiledevice::idevice;
 
-use crate::{errors::Errors, fetch_first_device, test_device_connection};
+use crate::{
+    errors::Errors, fetch_first_device, ok_or, some_or, test_device_connection,
+    util::RustyPlistConversion,
+};
 
 #[no_mangle]
 /// Installs a provisioning profile on the device
@@ -32,12 +35,14 @@ pub unsafe extern "C" fn minimuxer_install_provisioning_profile(
         Ok(d) => d,
         Err(_) => return Errors::NoDevice.into(),
     };
+
     let mis_client = match device.new_misagent_client("minimuxer-install-prov") {
         Ok(m) => m,
         Err(_) => {
             return Errors::CreateMisagent.into();
         }
     };
+
     match mis_client.install(plist) {
         Ok(_) => {}
         Err(e) => {
@@ -45,6 +50,7 @@ pub unsafe extern "C" fn minimuxer_install_provisioning_profile(
             return Errors::ProfileInstall.into();
         }
     }
+
     info!("Minimuxer finished installing profile!!");
 
     Errors::Success.into()
@@ -71,16 +77,18 @@ pub unsafe extern "C" fn minimuxer_remove_provisioning_profile(id: *mut libc::c_
         return Errors::NoConnection.into();
     }
 
-    let device = match idevice::get_first_device() {
+    let device = match fetch_first_device(Some(5000)) {
         Ok(d) => d,
         Err(_) => return Errors::NoDevice.into(),
     };
+
     let mis_client = match device.new_misagent_client("minimuxer-install-prov") {
         Ok(m) => m,
         Err(_) => {
             return Errors::CreateInstproxy.into();
         }
     };
+
     match mis_client.remove(id) {
         Ok(_) => {}
         Err(e) => {
@@ -88,97 +96,156 @@ pub unsafe extern "C" fn minimuxer_remove_provisioning_profile(id: *mut libc::c_
             return Errors::ProfileRemove.into();
         }
     }
+
     info!("Minimuxer finished removing profile!!");
 
     Errors::Success.into()
 }
 
 #[no_mangle]
-/// Removes provisioning profiles excluding the passed ids
-/// NOTE: Unfinished, WIP
+/// Removes provisioning profiles associated with the given IDs
+/// # Arguments
+/// - `ids`: The bundle IDs of profiles to remove, **seperated by comma.**<br />
+///   Each profile's Name will be checked against each given ID. If the Name contains an ID, the profile will be removed.<br />
+///   Example: ids `com.SideStore.SideStore,stream.yattee.app` would remove `com.SideStore.SideStore`, `com.SideStore.SideStore.AltWidget` and `stream.yattee.app` since they all have Names that would include a given ID.
 /// # Safety
 /// Don't be stupid
-pub unsafe extern "C" fn minimuxer_remove_inactive_profiles(ids: *const *const libc::c_char, count: c_int) -> c_int {
+pub unsafe extern "C" fn minimuxer_remove_provisioning_profiles(ids: *mut libc::c_char) -> c_int {
+    if ids.is_null() {
+        return Errors::FunctionArgs.into();
+    }
+
+    let c_str = std::ffi::CStr::from_ptr(ids);
+
+    let ids = ok_or!(c_str.to_str(), return Errors::FunctionArgs.into()).to_string();
+    let ids = ids.split(",");
+
     if !test_device_connection() {
         return Errors::NoConnection.into();
     }
 
-    let device = match idevice::get_first_device() {
-        Ok(d) => d,
-        Err(_) => return Errors::NoDevice.into(),
-    };
+    let device = ok_or!(
+        fetch_first_device(Some(5000)),
+        return Errors::NoDevice.into()
+    );
 
-    let mis_client = match device.new_misagent_client("minimuxer-install-prov") {
-        Ok(m) => m,
-        Err(_) => {
-            return Errors::CreateInstproxy.into();
-        }
-    };
+    let mis_client = ok_or!(
+        device.new_misagent_client("minimuxer-remove-prov"),
+        return Errors::CreateInstproxy.into()
+    );
 
-    let mut i: i32 = 0;
-    while i != count {
-        let id = std::ffi::CStr::from_ptr(*ids.add(i.try_into().unwrap()));
-        let id_str = id.to_str().unwrap();
-        println!("Rust ID: {}", id_str); // Just to confirm we received the correct Swift strings
-        i += 1;
-    }
-
-    // Get all certs from misagent service, so we can check against them
     let all_ids = match mis_client.copy(false) {
-        Ok(m) => m,
-        Err(_) => {
+        // I had issues with plist_plus not being able to parse around half of my profiles, so we use a helper function to convert to rusty plist
+        // rusty plist also works much better with rust types, and it makes looping through the array much easier
+        Ok(m) => match Value::from_plist_plus(m) {
+            Ok(v) => match v.as_array() {
+                Some(a) => a.to_owned(),
+                None => {
+                    error!("Unable to convert to array");
+                    return Errors::ProfileRemove.into();
+                }
+            },
+            Err(e) => {
+                error!("Unable to convert to rusty plist: {:?}", e);
+                return Errors::ProfileRemove.into();
+            }
+        },
+        Err(e) => {
+            error!("Unable to copy profiles from misagent: {:?}", e);
             return Errors::ProfileRemove.into();
         }
     };
 
-    // Get array size, otherwise we can't iter over the plist at all(?)
-    println!("all_ids plist array size: {:?}", all_ids.clone().array_get_size().unwrap());
-    let p_size = match all_ids.clone().array_get_size() {
-        Ok(m) => m,
-        Err(_) => {
-            return Errors::ProfileRemove.into();
+    for cert_data in all_ids {
+        let cert_data = some_or!(
+            cert_data.as_data(),
+            error!("Unable to get cert data val"),
+            continue
+        );
+
+        const PLIST_PREFIX: &[u8] = b"<?xml version=";
+        const PLIST_SUFFIX: &[u8] = b"</plist>";
+
+        // Get indexes of plist data prefix and suffix using windows
+        let prefix = some_or!(
+            cert_data
+                .windows(PLIST_PREFIX.len())
+                .position(|window| window == PLIST_PREFIX),
+            error!("Unable to get prefix"),
+            continue
+        );
+        let suffix = some_or!(
+            cert_data
+                .windows(PLIST_SUFFIX.len())
+                .position(|window| window == PLIST_SUFFIX),
+            error!("Unable to get suffix"),
+            continue
+        )
+            // the position will return the starting index; we want the ending index
+            // adding the length of the suffix gives us it
+            + PLIST_SUFFIX.len();
+
+        // Get the plist data
+        let plist_data = &cert_data[prefix..suffix];
+
+        let plist = match Value::from_bytes(plist_data) {
+            Ok(p) => match p.as_dictionary() {
+                Some(d) => d.to_owned(),
+                None => {
+                    error!("Unable to convert plist to dictionary");
+                    continue;
+                }
+            },
+            Err(e) => {
+                error!("Unable to convert cert bytes to plist: {:?}", e);
+                continue;
+            }
+        };
+
+        let name = match plist.get("Name") {
+            Some(e) => match e.as_string() {
+                Some(d) => d.to_owned(),
+                None => {
+                    error!("Unable to convert Name to string");
+                    continue;
+                }
+            },
+            None => {
+                error!("Unable to get Name");
+                continue;
+            }
+        };
+
+        if ids.clone().any(|id| name.contains(id)) {
+            let uuid = match plist.get("UUID") {
+                Some(e) => match e.as_string() {
+                    Some(d) => d.to_owned(),
+                    None => {
+                        error!("Unable to convert UUID to string");
+                        continue;
+                    }
+                },
+                None => {
+                    error!("Unable to get UUID");
+                    continue;
+                }
+            };
+            info!(
+                "Removing {} ({}) since it contained an ID we received",
+                name, uuid
+            );
+            match mis_client.remove(uuid) {
+                Ok(_) => {
+                    info!("Success!");
+                }
+                Err(e) => {
+                    error!("Unable to remove profile: {:?}", e);
+                }
+            };
         }
-    };
-
-    println!("Before loop");
-    for i in 0..p_size {
-        // Attempt to get the cert
-        let cert = match all_ids.array_get_item(i) {
-            Ok(c) => c,
-            Err(_) => {
-                // Just 'log' error and return error, otherwise iOS crashes
-                println!("Error getting cert");
-                return Errors::ProfileRemove.into();
-            }
-        };
-        // If we made it here, presume success, now try to get the cert data
-        let cert_data = match cert.get_data_val() {
-            Ok(d) => d,
-            Err(_) => {
-                return Errors::ProfileRemove.into();
-            }
-        };
-        // 'log' length of data to prove there is something there
-        println!("Cert #{}: {:?}", i, cert_data.len());
-
-        // TODO: Actual parsing of the data
-        /* Current explanation of cert data, no clue how to do this in Rust, but here goes..
-         * First we have to actually extract the plist xml data from cert_data above
-         * As far as I have seen, we can skip the first 62 bytes of data, and then read up until
-         * b"</plist>" (after the plist is the cert signature, I *presume*, but we don't need that
-         *
-         * All we need to do is then go through each cert, and compare with the ids we were passed
-         * from Swift. If the cert's bundle id isn't in the passed Swift, we delete it.
-         *
-         * TODO: Fix duplicate certificates being stored on device
-         * Check for the *earliest* cert we can, and delete all the older ones, *if* possible.
-         * Haven't checked libimobiledevice, so unsure if we can remove certs based off UUID or
-         * something other than bundle id.
-         * */
     }
 
-    println!("Got through minimuxer, ggez");
+    info!("Finished removing inactive profiles");
 
     Errors::Success.into()
 }
-

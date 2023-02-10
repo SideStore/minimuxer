@@ -1,9 +1,6 @@
 // Jackson Coxson
 
-use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    time::Duration,
-};
+use std::time::Duration;
 
 use rusty_libimobiledevice::{
     error::IdeviceError,
@@ -18,6 +15,10 @@ pub mod mounter;
 pub mod muxer;
 pub mod provision;
 mod raw_packet;
+#[cfg(test)]
+mod tests;
+#[macro_use]
+pub mod util;
 
 /// Waits for the muxer to return the device
 /// This ensures that the muxer is running
@@ -45,39 +46,21 @@ pub fn fetch_first_device(timeout: Option<u16>) -> Result<Device, IdeviceError> 
 
 /// Tests if the device is on and listening without jumping through hoops
 pub fn test_device_connection() -> bool {
-    // Connect to lockdownd's socket
-    std::net::TcpStream::connect_timeout(
-        &SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), 62078)),
-        Duration::from_millis(100),
-    )
-    .is_ok()
-}
+    #[cfg(test)]
+    {
+        log::info!("Skipping device connection test since we're in a test");
+        return true;
+    }
 
-#[cfg(test)]
-mod tests {
-    use crate::{heartbeat::start_beat, muxer::listen};
-    use plist_plus::Plist;
+    #[cfg(not(test))]
+    {
+        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
-    #[test]
-    fn run() {
-        let p_file = Plist::from_xml(
-            include_str!("../../../Documents/PairingFiles/00008101-001E30590C08001E.plist")
-                .to_string(),
+        // Connect to lockdownd's socket
+        std::net::TcpStream::connect_timeout(
+            &SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), 62078)),
+            Duration::from_millis(100),
         )
-        .unwrap();
-
-        #[allow(clippy::redundant_clone)]
-        let udid = p_file
-            .clone()
-            .dict_get_item("UDID")
-            .unwrap()
-            .get_string_val()
-            .unwrap();
-
-        listen(p_file);
-        start_beat(udid);
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(10));
-        }
+        .is_ok()
     }
 }
