@@ -2,9 +2,12 @@
 
 use log::{error, info};
 use rusty_libimobiledevice::idevice;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const VERSIONS_DICTIONARY: &str =
     "https://raw.githubusercontent.com/jkcoxson/JitStreamer/master/versions.json";
+
+pub static DMG_MOUNTED: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 /// Mount iOS's developer DMG
@@ -58,6 +61,7 @@ pub unsafe extern "C" fn minimuxer_auto_mount(docs_path: *mut libc::c_char) {
                     Ok(a) => match a.array_get_size() {
                         Ok(n) => {
                             if n > 0 {
+                                DMG_MOUNTED.store(true, Ordering::Relaxed);
                                 info!("Developer disk image already mounted");
                                 break;
                             }
@@ -192,8 +196,7 @@ pub unsafe extern "C" fn minimuxer_auto_mount(docs_path: *mut libc::c_char) {
                     }
                     // Move DMG to JIT Shipper directory
                     let ios_dmg = dmg_path.join("DeveloperDiskImage.dmg");
-                    std::fs::rename(ios_dmg, format!("{dmg_docs_path}/{ios_version}.dmg"))
-                        .unwrap();
+                    std::fs::rename(ios_dmg, format!("{dmg_docs_path}/{ios_version}.dmg")).unwrap();
                     let ios_sig = dmg_path.join("DeveloperDiskImage.dmg.signature");
                     std::fs::rename(
                         ios_sig,
@@ -224,6 +227,7 @@ pub unsafe extern "C" fn minimuxer_auto_mount(docs_path: *mut libc::c_char) {
 
                 match mim.mount_image(&path, "Developer", format!("{path}.signature")) {
                     Ok(_) => {
+                        DMG_MOUNTED.store(true, Ordering::Relaxed);
                         info!("Successfully mounted the image");
                         break;
                     }

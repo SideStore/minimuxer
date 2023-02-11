@@ -1,17 +1,19 @@
 use libc::c_char;
 use log::info;
 use simplelog::{ColorChoice, ConfigBuilder, LevelFilter, TermLogger, TerminalMode};
-use std::ffi::{CString};
+use std::ffi::CString;
 use std::io::{self, Write};
 use std::process::Command;
 use std::sync::Once;
 
 use crate::errors::Errors;
+use crate::heartbeat::start_beat;
+use crate::mounter::minimuxer_auto_mount;
 use crate::provision::minimuxer_remove_provisioning_profiles;
+use crate::{fetch_first_device, minimuxer_ready};
 
 /* Utils */
 
-/// MUST BE CALLED BEFORE EACH TEST
 fn init() {
     static INIT: Once = Once::new();
 
@@ -33,6 +35,18 @@ fn init() {
     });
 }
 
+/// Wrapper for a test function to ensure init() gets called
+macro_rules! make_test {
+    ($name: ident, $code: expr) => {
+        #[test]
+        fn $name() {
+            init();
+
+            $code
+        }
+    };
+}
+
 fn to_c_char(input: &str) -> *mut c_char {
     let c_str = CString::new(input).unwrap();
     c_str.into_raw() // FIXME: this should cause a memory leak but I had issues with as_ptr() not giving the correct args
@@ -51,10 +65,7 @@ fn list_profiles() -> String {
 
 /* Tests */
 
-#[test]
-fn remove_profiles() {
-    init(); // this must be called before each test to ensure logging works
-
+make_test!(remove_profiles, {
     info!("Listing profiles before remove");
     let before = list_profiles();
     println!();
@@ -74,4 +85,21 @@ fn remove_profiles() {
     println!();
 
     assert_ne!(before, after);
-}
+});
+
+make_test!(ready, {
+    info!("Starting heartbeat");
+    start_beat(fetch_first_device(Some(5000)).unwrap().get_udid());
+
+    info!("Starting auto mounter");
+    unsafe {
+        minimuxer_auto_mount(to_c_char(
+            "./target/dmg", /* for some reason this results in ./t/dmg/DMG ?? */
+        ))
+    }
+
+    info!("Sleeping for 10 seconds to allow for image to be mounted and heartbeat to start");
+    std::thread::sleep(std::time::Duration::from_secs(10));
+
+    assert_eq!(unsafe { minimuxer_ready() }, 1);
+});

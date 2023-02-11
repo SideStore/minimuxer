@@ -1,7 +1,10 @@
 // Jackson Coxson
 
-use std::time::Duration;
+use std::{sync::atomic::Ordering, time::Duration};
 
+use heartbeat::LAST_BEAT_SUCCESSFUL;
+use log::trace;
+use mounter::DMG_MOUNTED;
 use rusty_libimobiledevice::{
     error::IdeviceError,
     idevice::{self, Device},
@@ -63,4 +66,33 @@ pub fn test_device_connection() -> bool {
         )
         .is_ok()
     }
+}
+
+#[no_mangle]
+/// Returns 0 if minimuxer is not ready, 1 if it is. Ready means:
+/// - device connection succeeded
+/// - at least 1 device exists
+/// - last heartbeat was a success
+/// - the developer disk image is mounted
+/// # Safety
+/// I don't know how you would be able to make this function unsafe to use.
+pub unsafe extern "C" fn minimuxer_ready() -> libc::c_int {
+    let device_connection = test_device_connection();
+    let device_exists = fetch_first_device(Some(5000)).is_ok();
+    let heartbeat_success = LAST_BEAT_SUCCESSFUL.load(Ordering::Relaxed);
+    let dmg_mounted = DMG_MOUNTED.load(Ordering::Relaxed);
+
+    if !device_connection || !device_exists || !heartbeat_success || !dmg_mounted {
+        trace!(
+            "minimuxer is not ready. device connection succeeded: {}; at least 1 device exists: {}; last heartbeat was a success: {}; developer disk image is mounted: {}",
+            device_connection,
+            device_exists,
+            heartbeat_success,
+            dmg_mounted
+        );
+        return 0;
+    }
+
+    trace!("minimuxer is ready!");
+    1
 }
