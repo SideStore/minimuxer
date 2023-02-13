@@ -7,6 +7,13 @@ minimuxer is the lockdown muxer used by [SideStore](https://github.com/SideStore
 While minimuxer is built to run on device, it is recommended to test from your computer through USB to speed up the development process. (Obviously, you should still test on device; don't forget to
 change SideStore to call your function. When testing on device, use `cargo build --release --target aarch64-apple-ios` to build minimuxer for iOS before using Xcode to run SideStore)
 
+> **Warning**
+>
+> If you are adding a new function to minimuxer: When you try to use the function from swift/SideStore, it may appear as if the function is not defined, even if the function is in the minimuxer.h file
+> in Xcode. If this happens, you must run this command: `cp Dependencies/minimuxer/minimxuer.h minimuxer/minimuxer.h`
+>
+> That will update the version in the SideStore repo to use the new, modified header.
+
 SideStore communicates with minimuxer through C bindings called by Swift. If you are unsure on how to pass arguments to functions this way, check the currently implemented functions for examples.
 
 To test off device, open [tests.rs](src/tests.rs) and use the `make_test` macro to make a test (this ensures logging and other things are initialized). You can then use
