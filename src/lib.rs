@@ -17,6 +17,7 @@ pub mod jit;
 pub mod mounter;
 pub mod muxer;
 pub mod provision;
+pub mod location;
 mod raw_packet;
 
 /// Waits for the muxer to return the device
