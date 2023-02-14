@@ -1,7 +1,7 @@
 
 use log::{error, trace};
 use crate::{errors::Errors, fetch_first_device, test_device_connection};
-use rusty_libimobiledevice::{ service::ServiceClient};
+use rusty_libimobiledevice::{idevice, service::ServiceClient};
 
 #[no_mangle]
 /// is device connect
@@ -14,15 +14,12 @@ pub unsafe extern "C" fn minimuxer_isconnect() -> libc::c_int {
     }
 
     trace!("Getting device from muxer");
-    let _device = match fetch_first_device(Some(5000)) {
-        Ok(d) => d,
-        Err(e) => {
-            error!("Unable to get device: {:?}", e);
+    match idevice::get_first_device() {
+        Ok(_) => return Errors::Success.into(), 
+        Err(_) => {
             return Errors::NoDevice.into();
         }
-    };
-
-    return Errors::Success.into();
+    }
 }
 
 #[no_mangle]
