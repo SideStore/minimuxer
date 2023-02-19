@@ -10,7 +10,7 @@ change SideStore to call your function. When testing on device, use `cargo build
 > **Warning**
 >
 > If you are adding a new function to minimuxer: When you try to use the function from swift/SideStore, it may appear as if the function is not defined, even if the function is in the minimuxer.h file
-> in Xcode. If this happens, you must run this command: `cp Dependencies/minimuxer/minimxuer.h minimuxer/minimuxer.h`
+> in Xcode. If this happens, you must run this command: `cp Dependencies/minimuxer/minimuxer.h minimuxer/minimuxer.h`
 >
 > That will update the version in the SideStore repo to use the new, modified header.
 
