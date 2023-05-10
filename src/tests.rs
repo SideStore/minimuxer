@@ -11,6 +11,7 @@ use crate::jit::attach_debugger;
 use crate::mounter::start_auto_mounter;
 use crate::provision::dump_profiles;
 use crate::{ready, set_debug};
+use crate::location::set_location;
 
 /* Utils */
 
@@ -118,4 +119,9 @@ make_test!(afc_file_manager, {
 
 make_test!(dump_profiles_, {
     dump_profiles("./target".to_string()).unwrap();
+});
+
+make_test!(set_loc, {
+    //Set Location to Cupertino
+    set_location("37.333814".to_string(), "-122.008974".to_string(), 0).unwrap();
 });

@@ -23,6 +23,7 @@ mod muxer;
 mod provision;
 mod raw_packet;
 mod signing;
+mod location;
 #[cfg(test)]
 mod tests;
 
@@ -64,6 +65,12 @@ mod ffi {
 
         /* signing */
         // AppleCodesign(String),
+
+        /* location */
+        LockdownClient,
+        StartLocService,
+        ConnectLocService,
+        SendLocData,
     }
 
     extern "Rust" {
