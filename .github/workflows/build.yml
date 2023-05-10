@@ -38,7 +38,7 @@ jobs:
     - name: Upload to release
       uses: IsaacShelton/update-existing-release@v1.3.1
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.ACCESS_TOKEN }}
         release: "Build"
         tag: "build"
         files: |
