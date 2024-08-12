@@ -27,6 +27,15 @@ else
 	@echo "skipping sim builds"
 endif
 
+package: build
+	@echo "package"
+	@swift-bridge-cli create-package \
+		--bridges-dir ./generated \
+		--out-dir ../MinimuxerPackage \
+		--ios target/lib$(TARGET)-ios.a \
+		--simulator target/lib$(TARGET)-sim.a \
+		--name EMProxy
+
 # TODO: remove/update once SPM gets merged
 copy: build
 	@echo "SIDESTORE_REPO: $(SIDESTORE_REPO)"
