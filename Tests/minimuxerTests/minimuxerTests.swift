@@ -1,6 +1,19 @@
+//
+//  Test.swift
+//  minimuxer
+//
+//  Created by Joseph Mattiello on 9/16/24.
+//
+
 import Testing
 @testable import minimuxer
+@testable import libminimuxer
 
-@Test func example() async throws {
-    // Write your test here and use APIs like `#expect(...)` to check expected conditions.    
+struct Test {
+
+    @Test func test_minimuxer() async throws {
+
+        let ready = minimuxer.ready()
+        #expect(ready)
+    }
 }
