@@ -1,8 +1,12 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
-use crate::{muxer::STARTED, Errors, Res};
+use crate::{Errors, RUNTIME, Res, muxer::STARTED, rsd::get_or_create_rppairing_rsd_connection};
+use ::idevice::{IdeviceError, RsdService, lockdown::LockdownClient};
 use log::{error, info};
-use rusty_libimobiledevice::idevice::{self, Device};
+use rusty_libimobiledevice::{idevice::{self, Device}, services::lockdownd::LockdowndClient};
+use crate::{muxer::IS_RPPAIRING, muxer::RPPAIRING_FILE};
+
+use once_cell::sync::Lazy;
 
 #[swift_bridge::bridge]
 mod ffi {
@@ -54,9 +58,15 @@ pub fn test_device_connection() -> bool {
     {
         use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 
+        let port: u16;
+        if *IS_RPPAIRING.get().unwrap_or(&false) {
+            port = 49152;
+        } else {
+            port = 62078;
+        }
         // Connect to lockdownd's socket
         TcpStream::connect_timeout(
-            &SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), 62078)),
+            &SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), port)),
             Duration::from_millis(100),
         )
         .is_ok()
@@ -71,6 +81,11 @@ pub fn fetch_udid() -> Option<String> {
         return None;
     }
 
+    if *IS_RPPAIRING.get().unwrap_or(&false) {
+        error!("calling fetch_udid_rppairing");
+        return fetch_udid_rppairing();
+    }
+
     match fetch_first_device().map(|d| d.get_udid()) {
         Ok(s) => {
             info!("Success: {}", s);
@@ -79,6 +94,45 @@ pub fn fetch_udid() -> Option<String> {
         _ => {
             error!("Failed to get UDID! Device not connected?");
             None
+        }
+    }
+}
+
+fn fetch_udid_rppairing() -> Option<String> {
+    let ans: Result<Option<String>, Errors> = RUNTIME.block_on(async move {
+        let mut connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
+        let mut lockdownd_client = LockdownClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+            .await
+            .map_err(|e| Errors::CreateLockdown)?;
+
+        let udid_val = lockdownd_client.get_value(Some("UniqueDeviceID"), None).await
+         .map_err(|e| Errors::GetLockdownValue)?;
+
+        let udid = match udid_val
+         .as_string() {
+            Some(s) => s,
+            None => return Ok(None)
+         };
+         
+        Ok(Some(udid.to_string()))
+    });
+
+    match ans {
+        Ok(e) => {
+            match e {
+                Some(s) => {
+                    error!("got udid P{}", s);
+                    return Some(s)
+                },
+                None => {
+                    error!("got udid None");
+                    return None
+                }
+            }
+        }
+        Err(e) => {
+            error!("something went wrong");
+            return None;
         }
     }
 }

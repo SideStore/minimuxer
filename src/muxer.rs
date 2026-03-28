@@ -4,7 +4,10 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpListener};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock,
+};
 
 use log::{error, info, trace, warn};
 use plist::{Dictionary, Value};
@@ -28,6 +31,9 @@ mod ffi {
 }
 
 const LISTEN_PORT: u16 = 27015;
+
+pub static RPPAIRING_FILE: OnceLock<idevice::remote_pairing::RpPairingFile> = OnceLock::new();
+pub static IS_RPPAIRING: OnceLock<bool> = OnceLock::new();
 
 pub fn listen(pairing_file: Dictionary) {
     std::thread::Builder::new()
@@ -327,7 +333,7 @@ pub fn startWithLogger(
         info!("Logger initialized!!");
     }
 
-    let pairing_file: Dictionary = match plist::from_bytes(pairing_file.as_bytes()) {
+    let pairing_file_plist: Dictionary = match plist::from_bytes(pairing_file.as_bytes()) {
         Ok(p) => p,
         Err(e) => {
             error!("Failed to convert pairing file to plist!! {e:?}");
@@ -335,22 +341,58 @@ pub fn startWithLogger(
         }
     };
 
-    match pairing_file.get("UDID") {
+    let is_rppairing: bool;
+    match pairing_file_plist.get("UDID") {
         Some(u) => match u.as_string() {
-            Some(_) => {}
+            Some(_) => {
+                is_rppairing = false;
+            }
             None => {
                 error!("Couldn't convert UDID to string");
                 return Err(Errors::PairingFile);
             }
         },
         None => {
-            error!("Couldn't get UDID");
-            return Err(Errors::PairingFile);
+            // rppairing file
+            match pairing_file_plist.get("private_key") {
+                Some(u) => match u.as_data() {
+                    Some(_) => {
+                        is_rppairing = true;
+                    }
+                    None => {
+                        error!("Couldn't private_key to data");
+                        return Err(Errors::PairingFile);
+                    }
+                },
+                None => {
+                    error!("Couldn't get UDID");
+                    return Err(Errors::PairingFile);
+                }
+            }
         }
     };
 
-    listen(pairing_file);
-    start_beat();
+    if is_rppairing {
+        println!("Using rppairing!");
+        match idevice::remote_pairing::RpPairingFile::from_bytes(pairing_file.as_bytes()) {
+            Ok(p) => {
+                if RPPAIRING_FILE.set(p).is_err() {
+                    warn!("pairing_file was already initialized, keeping existing value");
+                }
+            },
+            Err(_) => {
+                    error!("Couldn't init rppairing file");
+                    return Err(Errors::PairingFile);
+            }
+        }
+
+        if IS_RPPAIRING.set(is_rppairing).is_err() {
+            warn!("is_rppairing was already initialized, keeping existing value");
+        }
+    } else {
+        listen(pairing_file_plist);
+        start_beat();
+    }
 
     info!("minimuxer has started!");
     STARTED.store(true, Ordering::Relaxed);

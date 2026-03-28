@@ -2,13 +2,17 @@
 
 
 use log::{error, info};
+use tokio::io::AsyncWriteExt;
 use plist::{Dictionary, Value};
 use plist_plus::Plist;
+use idevice::{RsdService, afc::{AfcClient, opcode::AfcFopenMode}, installation_proxy::InstallationProxyClient};
 use rusty_libimobiledevice::services::afc::AfcFileMode;
 
 use crate::{
     device::{fetch_first_device, test_device_connection},
-    Errors, PlistPlusConversion, Res,
+    muxer::IS_RPPAIRING,
+    rsd::get_or_create_rppairing_rsd_connection,
+    Errors, PlistPlusConversion, Res, RUNTIME,
 };
 
 #[swift_bridge::bridge]
@@ -32,6 +36,10 @@ pub fn yeet_app_afc(bundle_id: String, ipa_bytes: &[u8]) -> Res<()> {
     if !test_device_connection() {
         error!("No device connection");
         return Err(Errors::NoConnection);
+    }
+
+    if *IS_RPPAIRING.get().unwrap_or(&false) {
+        return yeet_app_afc_rppairing(bundle_id, ipa_bytes);
     }
 
     let device = fetch_first_device()?;
@@ -118,6 +126,10 @@ pub fn install_ipa(bundle_id: String) -> Res<()> {
         return Err(Errors::NoConnection);
     }
 
+    if *IS_RPPAIRING.get().unwrap_or(&false) {
+        return install_ipa_rppairing(bundle_id);
+    }
+
     let device = fetch_first_device()?;
 
     // normally, we use client_options_new: https://github.com/jkcoxson/rusty_libimobiledevice/blob/master/src/services/instproxy.rs#L123
@@ -164,6 +176,10 @@ pub fn remove_app(bundle_id: String) -> Res<()> {
         return Err(Errors::NoConnection);
     }
 
+    if *IS_RPPAIRING.get().unwrap_or(&false) {
+        return remove_app_rppairing(bundle_id);
+    }
+
     let device = fetch_first_device()?;
 
     let instproxy_client = match device.new_instproxy_client("minimuxer-remove-app") {
@@ -185,4 +201,99 @@ pub fn remove_app(bundle_id: String) -> Res<()> {
             Err(Errors::UninstallApp)
         }
     }
+}
+
+fn yeet_app_afc_rppairing(bundle_id: String, ipa_bytes: &[u8]) -> Res<()> {
+    RUNTIME.block_on(async move {
+        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
+        let mut afc = AfcClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+            .await
+            .map_err(|_| Errors::CreateAfc)?;
+
+        ensure_afc_directory(&mut afc, PKG_PATH).await?;
+        ensure_afc_directory(&mut afc, &format!("{PKG_PATH}/{bundle_id}")).await?;
+
+        let path = format!("{PKG_PATH}/{bundle_id}/app.ipa");
+        let mut handle = afc
+            .open(&path, AfcFopenMode::WrOnly)
+            .await
+            .map_err(|e| {
+                error!("Unable to open file on device: {e:?}");
+                Errors::RwAfc
+            })?;
+
+        handle.write_all(ipa_bytes).await.map_err(|e| {
+            error!("Unable to write ipa: {e:?}");
+            Errors::RwAfc
+        })?;
+
+        handle.shutdown().await.map_err(|e| {
+            error!("Unable to flush ipa contents: {e:?}");
+            Errors::RwAfc
+        })?;
+
+        handle.close().await.map_err(|e| {
+            error!("Unable to close file handle: {e:?}");
+            Errors::RwAfc
+        })?;
+
+        Ok(())
+    })
+}
+
+fn install_ipa_rppairing(bundle_id: String) -> Res<()> {
+    RUNTIME.block_on(async move {
+        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
+        let mut inst_client =
+            InstallationProxyClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+                .await
+                .map_err(|_| Errors::CreateInstproxy)?;
+
+        let mut client_opts = Dictionary::new();
+        client_opts.insert("CFBundleIdentifier".into(), bundle_id.clone().into());
+
+        inst_client
+            .install(
+                format!("{PKG_PATH}/{bundle_id}/app.ipa"),
+                Some(Value::Dictionary(client_opts)),
+            )
+            .await
+            .map_err(map_install_error)
+    })
+}
+
+fn remove_app_rppairing(bundle_id: String) -> Res<()> {
+    RUNTIME.block_on(async move {
+        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
+        let mut inst_client =
+            InstallationProxyClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+                .await
+                .map_err(|_| Errors::CreateInstproxy)?;
+
+        inst_client.uninstall(bundle_id, None).await.map_err(|e| {
+            error!("Unable to uninstall app!! {e:?}");
+            Errors::UninstallApp
+        })
+    })
+}
+
+async fn ensure_afc_directory(afc: &mut AfcClient, path: &str) -> Res<()> {
+    if afc.get_file_info(path).await.is_err() {
+        afc.mk_dir(path).await.map_err(|e| {
+            error!("Unable to make directory {path}: {e:?}");
+            Errors::RwAfc
+        })?;
+
+        afc.get_file_info(path).await.map_err(|e| {
+            error!("Unable to read directory info for {path}: {e:?}");
+            Errors::RwAfc
+        })?;
+    }
+
+    Ok(())
+}
+
+fn map_install_error(error: idevice::IdeviceError) -> Errors {
+    error!("Unable to install app: {error:?}");
+    Errors::InstallApp(error.to_string())
 }

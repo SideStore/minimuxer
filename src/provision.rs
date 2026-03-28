@@ -1,12 +1,15 @@
 // Jackson Coxson
 
+use idevice::{RsdService, misagent::MisagentClient};
 use log::{error, info};
 use plist::Value;
 use plist_plus::Plist;
 
 use crate::{
     device::{fetch_first_device, test_device_connection},
-    Errors, Res, RustyPlistConversion,
+    muxer::IS_RPPAIRING,
+    rsd::get_or_create_rppairing_rsd_connection,
+    Errors, Res, RustyPlistConversion, RUNTIME,
 };
 
 #[swift_bridge::bridge]
@@ -30,6 +33,11 @@ pub fn install_provisioning_profile(profile: &[u8]) -> Res<()> {
     if !test_device_connection() {
         error!("No device connection");
         return Err(Errors::NoConnection);
+    }
+
+    if *IS_RPPAIRING.get().unwrap_or(&false) {
+        error!("Calling: install_provisioning_profile_rppairing");
+        return install_provisioning_profile_rppairing(profile);
     }
 
     let device = fetch_first_device()?;
@@ -67,6 +75,10 @@ pub fn remove_provisioning_profile(id: String) -> Res<()> {
         return Err(Errors::NoConnection);
     }
 
+    if *IS_RPPAIRING.get().unwrap_or(&false) {
+        return remove_provisioning_profile_rppairing(id);
+    }
+
     let device = fetch_first_device()?;
 
     let mis_client = match device.new_misagent_client("minimuxer-install-prov") {
@@ -87,6 +99,36 @@ pub fn remove_provisioning_profile(id: String) -> Res<()> {
             Err(Errors::ProfileRemove)
         }
     }
+}
+
+fn install_provisioning_profile_rppairing(profile: &[u8]) -> Res<()> {
+    let profile = profile.to_vec();
+
+    RUNTIME.block_on(async move {
+        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
+        let mut mis_client = MisagentClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+            .await
+            .map_err(|_| Errors::CreateMisagent)?;
+
+        mis_client.install(profile).await.map_err(|e| {
+            error!("Unable to install provisioning profile: {e:?}");
+            Errors::ProfileInstall
+        })
+    })
+}
+
+fn remove_provisioning_profile_rppairing(id: String) -> Res<()> {
+    RUNTIME.block_on(async move {
+        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
+        let mut mis_client = MisagentClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+            .await
+            .map_err(|_| Errors::CreateMisagent)?;
+
+        mis_client.remove(&id).await.map_err(|e| {
+            error!("Unable to remove provisioning profile: {e:?}");
+            Errors::ProfileRemove
+        })
+    })
 }
 
 pub fn dump_profiles(docs_path: String) -> Res<String> {

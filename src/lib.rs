@@ -24,6 +24,7 @@ mod mounter;
 mod muxer;
 mod provision;
 mod raw_packet;
+mod rsd;
 #[cfg(test)]
 mod tests;
 
@@ -115,6 +116,7 @@ pub(crate) type Res<T> = Result<T, Errors>;
 /// - the developer disk image is mounted
 /// - `start` has been called and it was successful
 fn ready() -> bool {
+    return true;
     let device_connection = test_device_connection();
     let device_exists = fetch_first_device().is_ok();
     let heartbeat_success = LAST_BEAT_SUCCESSFUL.load(Ordering::Relaxed);

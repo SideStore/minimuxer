@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::io::AsyncWriteExt;
 
-use crate::{fetch_first_device, Errors, RUNTIME};
+use crate::{Errors, RUNTIME, fetch_first_device, muxer::IS_RPPAIRING};
 
 #[swift_bridge::bridge]
 mod ffi {
@@ -51,6 +51,11 @@ pub fn start_auto_mounter(docs_path: String) {
                 // Sleep in between failed attempts
                 std::thread::sleep(std::time::Duration::from_secs(5));
                 info!("Trying to mount dev image");
+
+                if *IS_RPPAIRING.get().unwrap_or(&false) {
+                    error!("calling start_auto_mounter");
+                    return;
+                }
 
                 // Fetch the device
                 let device = match fetch_first_device() {
@@ -328,7 +333,7 @@ pub fn start_auto_mounter(docs_path: String) {
                         {
                             Some(d) => d.to_provider(idevice::usbmuxd::UsbmuxdAddr::TcpSocket(std::net::SocketAddr::V4(
                         SocketAddrV4::from_str("127.0.0.1:27015").unwrap(),
-                    )), 0, "asdf"),
+                    )),  "asdf"),
                             None => {
                                 return Err(Errors::NoConnection);
                             }
@@ -336,7 +341,7 @@ pub fn start_auto_mounter(docs_path: String) {
 
                         info!("Creating provider from usbmuxd device");
                         let provider = TcpProvider {
-                            addr: std::net::IpAddr::V4(Ipv4Addr::from_str("10.7.0.1").unwrap()),
+                            addr: std::net::IpAddr::V4(Ipv4Addr::from_str("192.168.1.249").unwrap()),
                             pairing_file: dev.get_pairing_file().await.unwrap(),
                             label: "minimuxer".to_string(),
                         };
@@ -352,7 +357,7 @@ pub fn start_auto_mounter(docs_path: String) {
                         };
 
                         info!("Fetching UCID");
-                        let unique_chip_id = match match lockdown_client.get_value("UniqueChipID").await {
+                        let unique_chip_id = match match lockdown_client.get_value(Some("UniqueChipID"), None).await {
                             Ok(u) => u,
                             Err(_) => {
                                 if let Err(e) = lockdown_client
@@ -362,7 +367,7 @@ pub fn start_auto_mounter(docs_path: String) {
                                         return Err(Errors::CreateLockdown);
                                 }
                                 match lockdown_client
-                                    .get_value("UniqueChipID")
+                                    .get_value(Some("UniqueChipID"), None)
                                     .await {
                                     Ok(l) => l,
                                     Err(e) => {
