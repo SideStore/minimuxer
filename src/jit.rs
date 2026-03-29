@@ -1,19 +1,27 @@
 // Jackson Coxson
 
-
 use std::{
-    net::{Ipv4Addr, SocketAddrV4}, str::FromStr, sync::Mutex
+    net::{Ipv4Addr, SocketAddrV4},
+    str::FromStr,
 };
 
 use idevice::{
-    IdeviceService, ReadWrite, RsdService, core_device_proxy::CoreDeviceProxy, debug_proxy::DebugProxyClient, dvt::{process_control::ProcessControlClient, remote_server::RemoteServerClient}, provider::{IdeviceProvider, TcpProvider}, usbmuxd::UsbmuxdConnection
+    core_device_proxy::CoreDeviceProxy,
+    debug_proxy::DebugProxyClient,
+    dvt::{process_control::ProcessControlClient, remote_server::RemoteServerClient},
+    provider::{IdeviceProvider, TcpProvider},
+    usbmuxd::UsbmuxdConnection,
+    IdeviceService, ReadWrite, RsdService,
 };
 use log::{debug, error, info};
 use plist_plus::Plist;
 use rusty_libimobiledevice::services::instproxy::InstProxyClient;
 
 use crate::{
-    Errors, RUNTIME, Res, device::{fetch_first_device, test_device_connection}, muxer::IS_RPPAIRING, rsd::get_or_create_rppairing_rsd_connection
+    device::{fetch_first_device, test_device_connection},
+    muxer::IS_RPPAIRING,
+    rsd::connect_to_rsd_services,
+    Errors, Res, RUNTIME,
 };
 
 #[swift_bridge::bridge]
@@ -37,7 +45,6 @@ pub fn debug_app(app_id: String) -> Res<()> {
     }
 
     if *IS_RPPAIRING.get().unwrap_or(&false) {
-        error!("calling debug_app_rppairing");
         return debug_app_rppairing(app_id);
     }
     error!("continuing debug_app");
@@ -367,37 +374,31 @@ pub fn attach_debugger(pid: u32) -> Res<()> {
 
 pub fn debug_app_rppairing(app_id: String) -> Res<()> {
     RUNTIME.block_on(async move {
-        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
-        let mut remote_server = RemoteServerClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
-            .await
-            .map_err(|_| Errors::CreateRemoteServer)?;
-        let mut debug_proxy = DebugProxyClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
-            .await
-            .map_err(|_| Errors::CreateDebug)?;
+        let mut remote_server =
+            connect_to_rsd_services::<RemoteServerClient<Box<dyn ReadWrite + 'static>>>()
+                .await
+                .map_err(|_| Errors::CreateRemoteServer)?;
+        let mut debug_proxy =
+            connect_to_rsd_services::<DebugProxyClient<Box<dyn ReadWrite + 'static>>>()
+                .await
+                .map_err(|_| Errors::CreateDebug)?;
 
         let mut process_control = match ProcessControlClient::new(&mut remote_server).await {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("ERROR CONNECT: {}", e);
-                    return Err(Errors::CreateProcessControl)
-
-                }
+            Ok(p) => p,
+            Err(e) => {
+                error!("Error creating ProcessControlClient: {}", e);
+                return Err(Errors::CreateProcessControl);
+            }
         };
 
         let pid = process_control
-            .launch_app(app_id, None, None, true, false)
+            .launch_app(app_id, None, None, true, true)
             .await
             .map_err(|_| Errors::LaunchSuccess)?;
 
         let _ = process_control.disable_memory_limit(pid).await;
 
-        let commands = [
-            format!("vAttach;{pid:02X}"),
-            "D".to_string(),
-            "D".to_string(),
-            "D".to_string(),
-            "D".to_string(),
-        ];
+        let commands = [format!("vAttach;{pid:02X}"), "D".to_string()];
         for command in commands {
             match debug_proxy.send_command(command.into()).await {
                 Ok(res) => {
@@ -412,4 +413,3 @@ pub fn debug_app_rppairing(app_id: String) -> Res<()> {
         Ok(())
     })
 }
-

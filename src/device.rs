@@ -1,12 +1,11 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
-use crate::{Errors, RUNTIME, Res, muxer::STARTED, rsd::get_or_create_rppairing_rsd_connection};
-use ::idevice::{IdeviceError, RsdService, lockdown::LockdownClient};
+use crate::muxer::IS_RPPAIRING;
+use crate::rsd::connect_to_rsd_services;
+use crate::{muxer::STARTED, Errors, Res, RUNTIME};
+use ::idevice::lockdown::LockdownClient;
 use log::{error, info};
-use rusty_libimobiledevice::{idevice::{self, Device}, services::lockdownd::LockdowndClient};
-use crate::{muxer::IS_RPPAIRING, muxer::RPPAIRING_FILE};
-
-use once_cell::sync::Lazy;
+use rusty_libimobiledevice::idevice::{self, Device};
 
 #[swift_bridge::bridge]
 mod ffi {
@@ -82,7 +81,6 @@ pub fn fetch_udid() -> Option<String> {
     }
 
     if *IS_RPPAIRING.get().unwrap_or(&false) {
-        error!("calling fetch_udid_rppairing");
         return fetch_udid_rppairing();
     }
 
@@ -100,36 +98,31 @@ pub fn fetch_udid() -> Option<String> {
 
 fn fetch_udid_rppairing() -> Option<String> {
     let ans: Result<Option<String>, Errors> = RUNTIME.block_on(async move {
-        let mut connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
-        let mut lockdownd_client = LockdownClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+        let mut lockdown_client = connect_to_rsd_services::<LockdownClient>()
             .await
-            .map_err(|e| Errors::CreateLockdown)?;
+            .map_err(|_| Errors::CreateLockdown)?;
 
-        let udid_val = lockdownd_client.get_value(Some("UniqueDeviceID"), None).await
-         .map_err(|e| Errors::GetLockdownValue)?;
+        let udid_val = lockdown_client
+            .get_value(Some("UniqueDeviceID"), None)
+            .await
+            .map_err(|e| Errors::GetLockdownValue)?;
 
-        let udid = match udid_val
-         .as_string() {
+        let udid = match udid_val.as_string() {
             Some(s) => s,
-            None => return Ok(None)
-         };
-         
+            None => return Ok(None),
+        };
+
         Ok(Some(udid.to_string()))
     });
 
     match ans {
-        Ok(e) => {
-            match e {
-                Some(s) => {
-                    error!("got udid P{}", s);
-                    return Some(s)
-                },
-                None => {
-                    error!("got udid None");
-                    return None
-                }
+        Ok(e) => match e {
+            Some(s) => return Some(s),
+            None => {
+                error!("got udid None");
+                return None;
             }
-        }
+        },
         Err(e) => {
             error!("something went wrong");
             return None;

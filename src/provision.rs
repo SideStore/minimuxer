@@ -1,6 +1,6 @@
 // Jackson Coxson
 
-use idevice::{RsdService, misagent::MisagentClient};
+use idevice::{misagent::MisagentClient, RsdService};
 use log::{error, info};
 use plist::Value;
 use plist_plus::Plist;
@@ -8,7 +8,7 @@ use plist_plus::Plist;
 use crate::{
     device::{fetch_first_device, test_device_connection},
     muxer::IS_RPPAIRING,
-    rsd::get_or_create_rppairing_rsd_connection,
+    rsd::connect_to_rsd_services,
     Errors, Res, RustyPlistConversion, RUNTIME,
 };
 
@@ -36,7 +36,6 @@ pub fn install_provisioning_profile(profile: &[u8]) -> Res<()> {
     }
 
     if *IS_RPPAIRING.get().unwrap_or(&false) {
-        error!("Calling: install_provisioning_profile_rppairing");
         return install_provisioning_profile_rppairing(profile);
     }
 
@@ -105,8 +104,7 @@ fn install_provisioning_profile_rppairing(profile: &[u8]) -> Res<()> {
     let profile = profile.to_vec();
 
     RUNTIME.block_on(async move {
-        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
-        let mut mis_client = MisagentClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+        let mut mis_client = connect_to_rsd_services::<MisagentClient>()
             .await
             .map_err(|_| Errors::CreateMisagent)?;
 
@@ -119,8 +117,7 @@ fn install_provisioning_profile_rppairing(profile: &[u8]) -> Res<()> {
 
 fn remove_provisioning_profile_rppairing(id: String) -> Res<()> {
     RUNTIME.block_on(async move {
-        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
-        let mut mis_client = MisagentClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+        let mut mis_client = connect_to_rsd_services::<MisagentClient>()
             .await
             .map_err(|_| Errors::CreateMisagent)?;
 

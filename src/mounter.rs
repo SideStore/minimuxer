@@ -1,14 +1,25 @@
 // Jackson Coxson
 
-
-use idevice::{lockdown::LockdownClient, mobile_image_mounter::ImageMounter, provider::{IdeviceProvider, TcpProvider}, usbmuxd::UsbmuxdConnection, IdeviceService};
+use idevice::{
+    lockdown::LockdownClient,
+    mobile_image_mounter::ImageMounter,
+    provider::{IdeviceProvider, TcpProvider},
+    usbmuxd::UsbmuxdConnection,
+    IdeviceService,
+};
 use log::{debug, error, info};
 use std::{
-    io::Write, net::{Ipv4Addr, SocketAddrV4}, path::{Path, PathBuf}, str::FromStr, sync::atomic::{AtomicBool, Ordering}
+    io::Write,
+    net::{Ipv4Addr, SocketAddrV4},
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::atomic::{AtomicBool, Ordering},
 };
 use tokio::io::AsyncWriteExt;
 
-use crate::{Errors, RUNTIME, fetch_first_device, muxer::IS_RPPAIRING};
+use crate::{
+    fetch_first_device, muxer::IS_RPPAIRING, rsd::connect_to_rsd_services, Errors, RUNTIME,
+};
 
 #[swift_bridge::bridge]
 mod ffi {
@@ -52,45 +63,53 @@ pub fn start_auto_mounter(docs_path: String) {
                 std::thread::sleep(std::time::Duration::from_secs(5));
                 info!("Trying to mount dev image");
 
+                let ios_major_version: u8;
+                let is_rppairing: bool;
                 if *IS_RPPAIRING.get().unwrap_or(&false) {
-                    error!("calling start_auto_mounter");
-                    return;
+                    // rppairing does not exist below iOS 17, we just assume the device is above iOS 17 anyways
+                    ios_major_version = 17;
+                    is_rppairing = true;
+                } else {
+                    is_rppairing = false;
+                    // Fetch the device
+                    let device = match fetch_first_device() {
+                        Ok(d) => d,
+                        _ => continue,
+                    };
+
+                    let ld_client = match device.new_lockdownd_client("minimuxer") {
+                        Ok(l) => l,
+                        Err(e) => {
+                            error!("Failed to connect to lockdown: {e:?}");
+                            continue;
+                        }
+                    };
+
+                    let product_version = match ld_client.get_value("ProductVersion", "") {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("Failed to get product version from lockdown: {e:?}");
+                            continue;
+                        }
+                    };
+
+                    ios_major_version = if let Some(product_version) = product_version
+                        .get_string_val()
+                        .ok()
+                        .and_then(|x| x.split('.').collect::<Vec<&str>>()[0].parse::<u8>().ok())
+                    {
+                        product_version
+                    } else {
+                        error!("Failed to get product version from plist");
+                        continue;
+                    };
                 }
 
-                // Fetch the device
-                let device = match fetch_first_device() {
-                    Ok(d) => d,
-                    _ => continue,
-                };
-
-                let ld_client = match device.new_lockdownd_client("minimuxer") {
-                    Ok(l) => l,
-                    Err(e) => {
-                        error!("Failed to connect to lockdown: {e:?}");
-                        continue;
-                    }
-                };
-
-                let product_version = match ld_client.get_value("ProductVersion", "") {
-                    Ok(p) => p,
-                    Err(e) => {
-                        error!("Failed to get product version from lockdown: {e:?}");
-                        continue;
-                    }
-                };
-
-                let product_version = if let Some(product_version) = product_version
-                    .get_string_val()
-                    .ok()
-                    .and_then(|x| x.split('.').collect::<Vec<&str>>()[0].parse::<u8>().ok())
-                {
-                    product_version
-                } else {
-                    error!("Failed to get product version from plist");
-                    continue;
-                };
-
-                if product_version < 17 {
+                if ios_major_version < 17 {
+                    let device = match fetch_first_device() {
+                        Ok(d) => d,
+                        _ => continue,
+                    };
                     // Start an image mounter service
                     let mim = match device.new_mobile_image_mounter("sidestore-image-reeeee") {
                         Ok(m) => m,
@@ -289,7 +308,7 @@ pub fn start_auto_mounter(docs_path: String) {
                         }
                     }
                 } else {
-                    let dmg_docs_path = dmg_docs_path.clone(); 
+                    let dmg_docs_path = dmg_docs_path.clone();
                     if let Err(e) = RUNTIME.block_on(async move {
                         // Make sure everything is downloaded
                         let dir = PathBuf::from(dmg_docs_path);
@@ -312,6 +331,10 @@ pub fn start_auto_mounter(docs_path: String) {
                         }
 
                         info!("Files downloaded, getting device from muxer");
+
+                        if is_rppairing {
+                            return mount_personal_ddi_rppairing(dir).await;
+                        }
 
                         let mut uc = UsbmuxdConnection::new(
                             Box::new(
@@ -341,7 +364,7 @@ pub fn start_auto_mounter(docs_path: String) {
 
                         info!("Creating provider from usbmuxd device");
                         let provider = TcpProvider {
-                            addr: std::net::IpAddr::V4(Ipv4Addr::from_str("192.168.1.249").unwrap()),
+                            addr: std::net::IpAddr::V4(Ipv4Addr::from_str("10.7.0.1").unwrap()),
                             pairing_file: dev.get_pairing_file().await.unwrap(),
                             label: "minimuxer".to_string(),
                         };
@@ -482,5 +505,75 @@ async fn download_file_if_missing(
     file.write_all(&response).await?;
 
     println!("Saved to {:?}", path);
+    Ok(())
+}
+
+async fn mount_personal_ddi_rppairing(dir: PathBuf) -> Result<(), Errors> {
+    info!("Connecting to lockdown for UCID");
+    let mut lockdownd_client = match connect_to_rsd_services::<LockdownClient>().await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to start session: {e:?}");
+            return Err(Errors::CreateLockdown);
+        }
+    };
+
+    let ucid_val = lockdownd_client
+        .get_value(Some("UniqueChipID"), None)
+        .await
+        .map_err(|e| Errors::GetLockdownValue)?;
+    let unique_chip_id = match ucid_val.as_unsigned_integer() {
+        Some(s) => s,
+        None => {
+            error!("Failed to get lockdown value as uint");
+            return Err(Errors::GetLockdownValue);
+        }
+    };
+
+    info!("Connecting to image mounter");
+    let mut mounter_client = connect_to_rsd_services::<ImageMounter>()
+        .await
+        .expect("Unable to connect to image mounter");
+
+    info!("Copying devices from image mounter");
+    let images = match mounter_client.copy_devices().await {
+        Ok(i) => i,
+        Err(e) => {
+            error!("Failed to lookup images: {e:?}");
+            return Err(Errors::ImageLookup);
+        }
+    };
+
+    if !images.is_empty() {
+        info!("Already mounted");
+        return Ok(());
+    }
+
+    info!("Reading DDI files to memory");
+    let image_dmg = match tokio::fs::read(dir.join("Image.dmg")).await {
+        Ok(i) => i,
+        Err(e) => {
+            error!("Failed to read image to memory: {e:?}");
+            return Err(Errors::ImageRead);
+        }
+    };
+    let trustcache = match tokio::fs::read(dir.join("Image.dmg.trustcache")).await {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to read trustcache to memory: {e:?}");
+            return Err(Errors::ImageRead);
+        }
+    };
+    let manifest = match tokio::fs::read(dir.join("BuildManifest.plist")).await {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to read manifest to memory: {e:?}");
+            return Err(Errors::ImageRead);
+        }
+    };
+
+    // TODO Image Mounter still requires LockDown pairing, let's wait for idevice to update
+    info!("Mounting DDI...");
+
     Ok(())
 }

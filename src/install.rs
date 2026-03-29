@@ -1,17 +1,19 @@
 // Jackson Coxson
 
-
+use idevice::{
+    afc::{opcode::AfcFopenMode, AfcClient},
+    installation_proxy::InstallationProxyClient,
+};
 use log::{error, info};
-use tokio::io::AsyncWriteExt;
 use plist::{Dictionary, Value};
 use plist_plus::Plist;
-use idevice::{RsdService, afc::{AfcClient, opcode::AfcFopenMode}, installation_proxy::InstallationProxyClient};
 use rusty_libimobiledevice::services::afc::AfcFileMode;
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     device::{fetch_first_device, test_device_connection},
     muxer::IS_RPPAIRING,
-    rsd::get_or_create_rppairing_rsd_connection,
+    rsd::connect_to_rsd_services,
     Errors, PlistPlusConversion, Res, RUNTIME,
 };
 
@@ -205,8 +207,7 @@ pub fn remove_app(bundle_id: String) -> Res<()> {
 
 fn yeet_app_afc_rppairing(bundle_id: String, ipa_bytes: &[u8]) -> Res<()> {
     RUNTIME.block_on(async move {
-        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
-        let mut afc = AfcClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+        let mut afc = connect_to_rsd_services::<AfcClient>()
             .await
             .map_err(|_| Errors::CreateAfc)?;
 
@@ -214,13 +215,10 @@ fn yeet_app_afc_rppairing(bundle_id: String, ipa_bytes: &[u8]) -> Res<()> {
         ensure_afc_directory(&mut afc, &format!("{PKG_PATH}/{bundle_id}")).await?;
 
         let path = format!("{PKG_PATH}/{bundle_id}/app.ipa");
-        let mut handle = afc
-            .open(&path, AfcFopenMode::WrOnly)
-            .await
-            .map_err(|e| {
-                error!("Unable to open file on device: {e:?}");
-                Errors::RwAfc
-            })?;
+        let mut handle = afc.open(&path, AfcFopenMode::WrOnly).await.map_err(|e| {
+            error!("Unable to open file on device: {e:?}");
+            Errors::RwAfc
+        })?;
 
         handle.write_all(ipa_bytes).await.map_err(|e| {
             error!("Unable to write ipa: {e:?}");
@@ -243,11 +241,9 @@ fn yeet_app_afc_rppairing(bundle_id: String, ipa_bytes: &[u8]) -> Res<()> {
 
 fn install_ipa_rppairing(bundle_id: String) -> Res<()> {
     RUNTIME.block_on(async move {
-        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
-        let mut inst_client =
-            InstallationProxyClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
-                .await
-                .map_err(|_| Errors::CreateInstproxy)?;
+        let mut inst_client = connect_to_rsd_services::<InstallationProxyClient>()
+            .await
+            .map_err(|_| Errors::CreateInstproxy)?;
 
         let mut client_opts = Dictionary::new();
         client_opts.insert("CFBundleIdentifier".into(), bundle_id.clone().into());
@@ -264,11 +260,9 @@ fn install_ipa_rppairing(bundle_id: String) -> Res<()> {
 
 fn remove_app_rppairing(bundle_id: String) -> Res<()> {
     RUNTIME.block_on(async move {
-        let connection = &mut *get_or_create_rppairing_rsd_connection().await?.lock().unwrap();
-        let mut inst_client =
-            InstallationProxyClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
-                .await
-                .map_err(|_| Errors::CreateInstproxy)?;
+        let mut inst_client = connect_to_rsd_services::<InstallationProxyClient>()
+            .await
+            .map_err(|_| Errors::CreateInstproxy)?;
 
         inst_client.uninstall(bundle_id, None).await.map_err(|e| {
             error!("Unable to uninstall app!! {e:?}");

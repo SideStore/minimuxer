@@ -13,7 +13,7 @@ use tokio::runtime::{self, Runtime};
 use crate::device::{fetch_first_device, test_device_connection};
 use crate::heartbeat::LAST_BEAT_SUCCESSFUL;
 use crate::mounter::DMG_MOUNTED;
-use crate::muxer::STARTED;
+use crate::muxer::{IS_RPPAIRING, STARTED};
 
 mod afc_file_manager;
 mod device;
@@ -116,12 +116,26 @@ pub(crate) type Res<T> = Result<T, Errors>;
 /// - the developer disk image is mounted
 /// - `start` has been called and it was successful
 fn ready() -> bool {
-    return true;
     let device_connection = test_device_connection();
-    let device_exists = fetch_first_device().is_ok();
-    let heartbeat_success = LAST_BEAT_SUCCESSFUL.load(Ordering::Relaxed);
     let dmg_mounted = DMG_MOUNTED.load(Ordering::Relaxed);
     let started = STARTED.load(Ordering::Relaxed);
+
+    if *IS_RPPAIRING.get().unwrap_or(&false) {
+        if !device_connection || !started {
+            info!(
+                "minimuxer is not ready. device connection succeeded: {}; developer disk image is mounted (not counted): {}; started: {}",
+                device_connection,
+                dmg_mounted,
+                started
+            );
+            return false;
+        }
+        return true;
+    }
+
+    let device_exists = fetch_first_device().is_ok();
+    let heartbeat_success = LAST_BEAT_SUCCESSFUL.load(Ordering::Relaxed);
+
 
     if !device_connection || !device_exists || !heartbeat_success || !started {
         info!(

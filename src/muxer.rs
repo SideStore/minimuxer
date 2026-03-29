@@ -379,10 +379,10 @@ pub fn startWithLogger(
                 if RPPAIRING_FILE.set(p).is_err() {
                     warn!("pairing_file was already initialized, keeping existing value");
                 }
-            },
+            }
             Err(_) => {
-                    error!("Couldn't init rppairing file");
-                    return Err(Errors::PairingFile);
+                error!("Couldn't init rppairing file");
+                return Err(Errors::PairingFile);
             }
         }
 
