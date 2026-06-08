@@ -335,9 +335,13 @@ pub fn startWithLogger(
         }
     };
 
-    match pairing_file.get("UDID") {
+    let udid_str = match pairing_file.get("UDID") {
         Some(u) => match u.as_string() {
-            Some(_) => {}
+            Some(s) => {
+                // Cache UDID for iOS 26 fallback
+                crate::device::set_pairing_udid(s.to_string());
+                s.to_string()
+            }
             None => {
                 error!("Couldn't convert UDID to string");
                 return Err(Errors::PairingFile);
@@ -349,6 +353,7 @@ pub fn startWithLogger(
         }
     };
 
+    info!("Pairing UDID cached: {}", udid_str);
     listen(pairing_file);
     start_beat();
 
