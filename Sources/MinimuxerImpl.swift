@@ -57,13 +57,13 @@ final internal class MinimuxerImpl: MinimuxerAPI {
                 return .failure(.noConnection("No wifi interface satisfied"))
             }
 
-            // check VPN Availability for all modes
+            // A reachable manual peer may be routed by the LAN gateway rather
+            // than a VPN interface on this device. Only enforce local VPN
+            // interface requirements when tunnel auto-discovery selected the
+            // active peer.
             let net = Minimuxer.network
-            let uTunPresent = net.isUTunAvailable
-            if !uTunPresent {
-                debugLog("[minimuxer] minimuxer not ready: no utun interface found")
-                return .failure(.noVPN("No utun interface detected — LocalDevVPN is not connected"))
-            }
+            let peerResolution = await NetworkIfaceScanner.shared.activePeerResolution
+            let requiresLocalVPNInterfaces = peerResolution?.requiresLocalVPNInterfaces ?? true
 
             // check if pairing file is loaded
             let pairingType = getPairingFileType()
@@ -72,11 +72,18 @@ final internal class MinimuxerImpl: MinimuxerAPI {
                 return .failure(.pairingFile(protocol: .lockdown, reason: "No valid pairing file has been loaded in Minimuxer"))
             }
 
-            // check iKEv2 too if in lockdown mode and ios >= 26.4
-            if !isrppairing && !net.isIKEv2IPSecAvailable {
-                if #available(iOS 26.4, *) {
-                    debugLog("[minimuxer] minimuxer not ready: no ipsec interface (required for lockdown on iOS 26.4+)")
-                    return .failure(.invalidVPN("utun is present but no ipsec/IKEv2 interface found — LocalDevVPN may not support the lockdown protocol on iOS 26.4+"))
+            if requiresLocalVPNInterfaces {
+                if !net.isUTunAvailable {
+                    debugLog("[minimuxer] minimuxer not ready: no utun interface or reachable override peer found")
+                    return .failure(.noVPN("No utun interface or reachable override peer detected"))
+                }
+
+                // check iKEv2 too if in lockdown mode and ios >= 26.4
+                if !isrppairing && !net.isIKEv2IPSecAvailable {
+                    if #available(iOS 26.4, *) {
+                        debugLog("[minimuxer] minimuxer not ready: no ipsec interface (required for lockdown on iOS 26.4+)")
+                        return .failure(.invalidVPN("utun is present but no ipsec/IKEv2 interface found — LocalDevVPN may not support the lockdown protocol on iOS 26.4+"))
+                    }
                 }
             }
 
@@ -85,14 +92,14 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             do {
                 tunnelPeerIp = try await TunnelPeer.shared.ip()
             } catch {
-                debugLog("[minimuxer] minimuxer not ready: tunnel peer IP not available despite tunnel iface being present")
-                return .failure(.invalidVPN("VPN tunnel iface is up but tunnel peer IP is not yet available — VPN may not be routing device traffic correctly. Cause: \(error.localizedDescription)"))
+                debugLog("[minimuxer] minimuxer not ready: no reachable peer IP is available")
+                return .failure(.invalidVPN("No reachable peer IP is available. Cause: \(error.localizedDescription)"))
             }
             
             let peerReachable = testDeviceConnection(ifaddr: tunnelPeerIp)
             if !peerReachable {
                 debugLog("[minimuxer] minimuxer not ready: failed to connect to tunnel peer IP")
-                return .failure(.invalidVPN("VPN tunnel iface is up and tunnel peer IP \(tunnelPeerIp) is known, but TCP port poll failed — device may be unreachable on this interface"))
+                return .failure(.invalidVPN("Peer IP \(tunnelPeerIp) is known, but TCP port poll failed — the device route may no longer be reachable"))
             }
 
 

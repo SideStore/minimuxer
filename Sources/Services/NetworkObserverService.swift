@@ -64,10 +64,9 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
         let changed = await NetworkIfaceScanner.shared.refresh()
         guard changed else { return }
 
-        verboseLog("[minimuxer] [net] retrive the first uTun vpn interface info")
+        let peerResolution = await NetworkIfaceScanner.shared.activePeerResolution
+        verboseLog("[minimuxer] [net] retrieve the first uTun vpn interface info")
         if let info = try? await NetworkIfaceScanner.shared.probableVPN() {
-            // let peerIP = info.peerIP
-            let peerIP = await info.peerIP
             verboseLog("""
             [minimuxer] [net] vpn interface detected
               • name: \(info.name)
@@ -76,20 +75,21 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
               • linkType: \(info.linkType)
               • reportedPeer: \(info.reportedPeer ?? "nil")
               • derivedPeer: \(info.derivedPeer ?? "nil")
-              • activePeer: \(peerIP ?? "nil")
+              • activePeer: \(peerResolution?.ip ?? "nil")
+              • peerSource: \(peerResolution.map { String(describing: $0.source) } ?? "nil")
             """)
-
-            if let peer = peerIP {
-                verboseLog("[minimuxer] [net] update tunnel peer IP with discovered peer on the vpn iface")
-                await TunnelPeer.shared.update(peer)
-                MuxerService.notifyDeviceAttached(tunnelPeerIp: peer)
-            } else {
-                verboseLog("[minimuxer] [net] peer not available for \(info.name)")
-                await TunnelPeer.shared.clear()
-                MuxerService.notifyDeviceDetached()
-            }
+        } else if peerResolution?.source == .manualOverride {
+            verboseLog("[minimuxer] [net] no local VPN interface detected; using reachable override peer")
         } else {
             verboseLog("[minimuxer] [net] no SideVPN endpoint detected")
+        }
+
+        if let peer = peerResolution?.ip {
+            verboseLog("[minimuxer] [net] update tunnel peer IP with reachable peer")
+            await TunnelPeer.shared.update(peer)
+            MuxerService.notifyDeviceAttached(tunnelPeerIp: peer)
+        } else {
+            verboseLog("[minimuxer] [net] no reachable peer available")
             await TunnelPeer.shared.clear()
             MuxerService.notifyDeviceDetached()
         }

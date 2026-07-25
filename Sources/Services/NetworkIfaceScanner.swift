@@ -87,16 +87,6 @@ internal struct NetInfo: Hashable, CustomStringConvertible, Sendable {
         }
     }
 
-    var peerIP: String? {
-        // if let peer = reportedPeer, peer == hostIP {
-        //     return derivedPeer
-        // }
-        // return reportedPeer
-        get async {
-            await NetworkIfaceScanner.shared.getPeer(for: self)
-        }
-    }
-
     var linkType: String {
         maskIP == "255.255.255.255" ? "p2pLink" : "subnetLink"
     }
@@ -112,12 +102,23 @@ internal struct NetInfo: Hashable, CustomStringConvertible, Sendable {
         if let der = derivedPeer {
             desc += " derivedPeer: \(der)"
         }
-        // if let peer = peerIP {
-        //     desc += " peerIP: \(peer)"
-        // }
         return desc
     }
     
+}
+
+internal enum PeerSource: Equatable, Sendable {
+    case tunnel
+    case manualOverride
+}
+
+internal struct PeerResolution: Equatable, Sendable {
+    let ip: String
+    let source: PeerSource
+
+    var requiresLocalVPNInterfaces: Bool {
+        source == .tunnel
+    }
 }
 
 actor NetworkIfaceScanner {
@@ -127,9 +128,13 @@ actor NetworkIfaceScanner {
     private var interfacesCache: Set<NetInfo> = []
     private var refreshed = false
     private var tunnelConfigCache: TunnelConfigBinding?
+    private(set) var activePeerResolution: PeerResolution?
 
     func bindTunnelConfig(_ binding: TunnelConfigBinding) async {
         tunnelConfigCache = binding
+        // A newly supplied override must be evaluated even if the interfaces did
+        // not change since the previous scan.
+        refreshed = false
         await Minimuxer.network.refreshEndpoint()
     }
 
@@ -156,10 +161,11 @@ actor NetworkIfaceScanner {
         let vpnIface = try? probableVPN()
         tunnelConfigCache?.setTunnelIfaceIp(vpnIface?.hostIP)
         tunnelConfigCache?.setSubnetMask(vpnIface?.maskIP)
-        // let peerIP = vpnIface?.peerIP
-        let peerIP = await vpnIface?.peerIP
-        let isOverrideActive = peerIP != nil && peerIP == tunnelConfigCache?.getOverridePeerIp()
-        tunnelConfigCache?.setTunnelPeerIp(peerIP)
+        let peerResolution = resolvePeer(for: vpnIface)
+        activePeerResolution = peerResolution
+        let isOverrideActive = peerResolution?.ip != nil
+            && peerResolution?.ip == tunnelConfigCache?.getOverridePeerIp()
+        tunnelConfigCache?.setTunnelPeerIp(peerResolution?.ip)
         tunnelConfigCache?.setOverrideEffective(isOverrideActive)
         
         debugLog("""
@@ -167,7 +173,8 @@ actor NetworkIfaceScanner {
           • interfaces: \(interfacesCache.count)
           • vpn host: \(vpnIface?.hostIP ?? "nil")
           • vpn mask: \(vpnIface?.maskIP ?? "nil")
-          • vpn peer: \(peerIP ?? "nil")
+          • active peer: \(peerResolution?.ip ?? "nil")
+          • peer source: \(peerResolution.map { String(describing: $0.source) } ?? "nil")
           • cachedOverridePeerIp: \(tunnelConfigCache?.getOverridePeerIp() ?? "nil")
           • overrideEffective: \(isOverrideActive)
           • refreshed: \(refreshed)
@@ -227,28 +234,39 @@ actor NetworkIfaceScanner {
         return result
     }
 
-    func getPeer(for iface: NetInfo) -> String? {
-        if let autoPeerIp = iface.derivedPeer {
-            let reachable = Minimuxer.shared.testDeviceConnection(ifaddr: autoPeerIp)
-            if reachable {
+    func resolvePeer(for iface: NetInfo?) -> PeerResolution? {
+        Self.selectPeer(
+            autoPeerIp: iface?.derivedPeer,
+            overridePeerIp: cachedOverridePeerIp
+        ) { candidate in
+            Minimuxer.shared.testDeviceConnection(ifaddr: candidate)
+        }
+    }
+
+    nonisolated static func selectPeer(
+        autoPeerIp: String?,
+        overridePeerIp: String?,
+        isReachable: (String) -> Bool
+    ) -> PeerResolution? {
+        if let autoPeerIp {
+            if isReachable(autoPeerIp) {
                 debugLog("[minimuxer] [iface] auto-discovered peer reachable at: \(autoPeerIp)")
-                return autoPeerIp
-            } else {
-                debugLog("[minimuxer] [iface] auto-discovered peer NOT reachable at: \(autoPeerIp)")
+                return PeerResolution(ip: autoPeerIp, source: .tunnel)
             }
+            debugLog("[minimuxer] [iface] auto-discovered peer NOT reachable at: \(autoPeerIp)")
         }
 
-        if let cachedPeerIp = cachedOverridePeerIp {
-            let reachable = Minimuxer.shared.testDeviceConnection(ifaddr: cachedPeerIp)
-            if reachable {
-                debugLog("[minimuxer] [iface] override peer reachable at: \(cachedPeerIp)")
-                return cachedPeerIp
-            } else {
-                debugLog("[minimuxer] [iface] override peer NOT reachable at: \(cachedPeerIp)")
-                return nil
+        if let overridePeerIp, !overridePeerIp.isEmpty {
+            if isReachable(overridePeerIp) {
+                debugLog("[minimuxer] [iface] override peer reachable at: \(overridePeerIp)")
+                return PeerResolution(ip: overridePeerIp, source: .manualOverride)
             }
+            debugLog("[minimuxer] [iface] override peer NOT reachable at: \(overridePeerIp)")
+        } else {
+            debugLog("[minimuxer] [iface] no override peer configured")
         }
-        debugLog("[minimuxer] [iface] no override peer configured and no reachable auto-discovered peer found")
+
+        debugLog("[minimuxer] [iface] no reachable peer found")
         return nil
     }
 
