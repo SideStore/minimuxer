@@ -16,10 +16,47 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     private actor State {
         var status: MinimuxerStatus = .stopped
         var mountTask: Task<Bool, Error>? = nil
+        var mountGeneration: UInt64 = 0
         var lastDocsPath: String? = nil
         
         func with<T>(_ body: (isolated State) throws -> T) rethrows -> T {
             try body(self)
+        }
+
+        var isStarted: Bool {
+            status == .started
+        }
+
+        var mountSnapshot: (
+            generation: UInt64,
+            task: Task<Bool, Error>
+        )? {
+            mountTask.map { (mountGeneration, $0) }
+        }
+
+        func startMount(
+            docsPath: String,
+            operation: @escaping @Sendable () async throws -> Bool
+        ) -> Task<Bool, Error> {
+            let previousTask = mountTask
+            previousTask?.cancel()
+            mountGeneration &+= 1
+            lastDocsPath = docsPath
+            let task = Task.detached(priority: .medium) {
+                if let previousTask {
+                    _ = try? await previousTask.value
+                }
+                try Task.checkCancellation()
+                return try await operation()
+            }
+            mountTask = task
+            return task
+        }
+
+        func cancelMount() {
+            mountTask?.cancel()
+            mountGeneration &+= 1
+            mountTask = nil
         }
     }
     private let state = State()
@@ -225,6 +262,13 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         self.isLoggingEnabled = enabled
         IdeviceGateway.shared.setLogging(enabled)
     }
+
+    func revalidateConnectivitySessionAfterForeground() async {
+        guard await state.isStarted, getPairingFileType() == .lockdown else {
+            return
+        }
+        await LockdownSessionRuntime.shared.revalidateAfterForeground()
+    }
     
     func retargetUsbmuxdAddr() {
         verboseLog("[minimuxer] unsetenv(USBMUXD_SOCKET_ADDRESS)")
@@ -248,11 +292,13 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             throw connectionNotConfiguredError()
         }
         await Minimuxer.network.start()
+        await LockdownSessionRuntime.shared.shutdown()
 
         // actor serialization scope
-        try await state.with{
+        await state.with {
             $0.status = .inprogress     // mark inprogress
             $0.lastDocsPath = mountPath // record the mountPath
+            $0.cancelMount()
         }
         // let idevice initialize its state and set isRPPairing
         try IdeviceGateway.shared.start(pairingFileContent: pairingFile)
@@ -260,13 +306,36 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         retargetUsbmuxdAddr()
         // start our fake usbmuxd server for lockdown protocol based clients if required
         try await restartMuxerServer()
-        
-        do {
-            try await matchingPriority{
-                try await Mounter.shared.mount(docsPath: mountPath)
+
+        let pairingProtocol = getPairingFileType()
+        guard pairingProtocol != .unknown else {
+            await state.with { $0.status = .stopped }
+            throw MinimuxerError.pairingFile(
+                protocol: .unknown,
+                reason: "Unsupported pairing protocol"
+            )
+        }
+
+        if pairingProtocol == .lockdown {
+            await LockdownSessionRuntime.shared.configure()
+            _ = await state.startMount(docsPath: mountPath) {
+                try await self.performChildServiceOperation(
+                    unavailableError: .mount(
+                        protocol: .lockdown,
+                        reason: "Lockdown session became unavailable"
+                    )
+                ) {
+                    try await Mounter.shared.mount(docsPath: mountPath)
+                }
             }
-        } catch {
-            debugLog("[minimuxer] WARN: Initial DDI mount skipped during startup: \(error.localizedDescription)")
+        } else {
+            do {
+                _ = try await matchingPriority{
+                    try await Mounter.shared.mount(docsPath: mountPath)
+                }
+            } catch {
+                debugLog("[minimuxer] WARN: Initial DDI mount skipped during startup: \(error.localizedDescription)")
+            }
         }
         // mark ready!
         try await state.with{
@@ -276,17 +345,14 @@ final internal class MinimuxerImpl: MinimuxerAPI {
 
     func stop() async {
         // actor serialization scope
-        try await state.with{
-            $0.status = .inprogress // mark inprogress
-            $0.mountTask?.cancel()  // cancel the task
-        }
-        try await state.with{
+        await state.with {
             $0.status = .inprogress
-            $0.mountTask = nil
+            $0.cancelMount()
         }
+        await LockdownSessionRuntime.shared.shutdown()
         MuxerService.stop()
         // mark ready!
-        try await state.with{
+        await state.with {
             $0.status = .stopped
         }
     }
@@ -308,21 +374,40 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
     
     func mountDDI(docsPath: String) async throws -> Bool {
-        // actor serialization scope
-        await state.with{
-            $0.lastDocsPath = docsPath  // record the mountPath
-            $0.mountTask?.cancel()      // cancel the task
+        let activeProtocol = getPairingFileType()
+        let task = await state.startMount(docsPath: docsPath) {
+            try await self.performChildServiceOperation(
+                unavailableError: .mount(
+                    protocol: activeProtocol,
+                    reason: "Lockdown session became unavailable"
+                )
+            ) {
+                try await Mounter.shared.mount(docsPath: docsPath)
+            }
         }
-        let task = Task.detached(priority: .medium) {
-            try await Mounter.shared.mount(docsPath: docsPath)
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
         }
-        await state.with{
-            $0.mountTask = task
-        }
-        return try await task.value
     }
     func isDDIMounted() async throws -> Bool {
-        try await matchingPriority{
+        let activeProtocol = getPairingFileType()
+        if activeProtocol == .lockdown {
+            while let snapshot = await state.mountSnapshot {
+                _ = try? await snapshot.task.value
+                guard await state.mountGeneration == snapshot.generation else {
+                    continue
+                }
+                break
+            }
+        }
+        return try await performChildServiceOperation(
+            unavailableError: .mount(
+                protocol: activeProtocol,
+                reason: "Lockdown session became unavailable"
+            )
+        ) {
             try IdeviceGateway.shared.isDDIMounted()
         }
     }
@@ -428,13 +513,21 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     func installProvisioningProfile(profile: Data) async throws {
-        try await matchingPriority{
+        try await performChildServiceOperation(
+            unavailableError: .profileInstall(
+                "Lockdown session became unavailable"
+            )
+        ) {
             try IdeviceGateway.shared.installProvisioningProfile(profile: profile)
         }
     }
 
     func removeProvisioningProfile(id: String) async throws {
-        try await matchingPriority{
+        try await performChildServiceOperation(
+            unavailableError: .profileRemove(
+                "Lockdown session became unavailable"
+            )
+        ) {
             try IdeviceGateway.shared.removeProvisioningProfile(id: id)
         }
     }
@@ -460,6 +553,35 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     func afcGetFileInfo(bundleId: String, path: String) async throws -> (isDirectory: Bool, fileSize: Int64) {
         try await matchingPriority {
             try IdeviceGateway.shared.afcGetFileInfo(bundleId: bundleId, path: path)
+        }
+    }
+
+    private func performChildServiceOperation<T: Sendable>(
+        unavailableError: MinimuxerError,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        switch getPairingFileType() {
+        case .rppairing:
+            return try await matchingPriority(operation)
+        case .lockdown:
+            do {
+                return try await LockdownSessionRuntime.shared
+                    .withReadyChildServiceOperation {
+                        let task = Task.detached(
+                            priority: .medium,
+                            operation: operation
+                        )
+                        return try await withTaskCancellationHandler {
+                            try await task.value
+                        } onCancel: {
+                            task.cancel()
+                        }
+                    }
+            } catch LockdownSessionRuntimeError.unavailable {
+                throw unavailableError
+            }
+        case .unknown:
+            throw unavailableError
         }
     }
 }

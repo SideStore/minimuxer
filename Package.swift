@@ -20,6 +20,10 @@ let package = Package(
         )
     ],
     targets: [
+        .target(
+            name: "MinimuxerDomain",
+            path: "Domain"
+        ),
 //        .binaryTarget(
 //            name: "IDevice",
 //            url: "https://github.com/jkcoxson/idevice/releases/download/v0.1.64/idevice-xcframework-v0.1.64.zip",
@@ -39,10 +43,16 @@ let package = Package(
         .target(
             name: "Minimuxer",
             dependencies: [
+                "MinimuxerDomain",
                 "IDevice",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation")
             ],
             path: "Sources"
+        ),
+        .testTarget(
+            name: "MinimuxerTests",
+            dependencies: ["MinimuxerDomain"],
+            path: "Tests/MinimuxerTests"
         )
     ]
 )

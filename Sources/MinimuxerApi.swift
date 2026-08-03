@@ -63,6 +63,9 @@ public protocol MinimuxerAPI: AnyObject {
     func describeError(_ error: MinimuxerError) -> String
     func bindConnectionConfig(_ binding: ConnectionConfigBinding) async
     func setLogging(_ enabled: Bool)
+    /// Restarts the Lockdown heartbeat after a foreground transition.
+    /// Remote Pairing sessions are unchanged.
+    func revalidateConnectivitySessionAfterForeground() async
 
     func start(pairingFile: String, mountPath: String) async throws
     func stop() async throws

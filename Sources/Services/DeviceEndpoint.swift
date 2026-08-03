@@ -34,6 +34,10 @@ actor DeviceEndpoint {
         verboseLog("[minimuxer] device endpoint cleared -> nil")
     }
 
+    var currentIP: String? {
+        ipAddr
+    }
+
     var isInitialized: Bool {
         ipAddr != nil
     }

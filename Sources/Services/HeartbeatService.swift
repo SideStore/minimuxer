@@ -7,114 +7,114 @@
 //
 
 import Foundation
-// import RustBridge
+import MinimuxerDomain
 
-final internal class HeartbeatService {
-    
-    private actor MutableState {
-        var running = false
-        var taskActive = false
-
-        func tryStart() -> Bool {
-            if taskActive {
-                running = true
-                return false
-            }
-            running = true
-            taskActive = true
-            return true
-        }
-
-        func stop() {
-            running = false
-        }
-
-        func terminate() {
-            taskActive = false
-            running = false
-        }
+enum HeartbeatService {
+    enum Event: Sendable {
+        case ready
+        case disconnected
     }
 
-    private static let state = MutableState()
-    private static var lastErrorDescription: String?
+    static func run(
+        sessionID: UInt64,
+        eventSink: @escaping @Sendable (Event) async -> Void
+    ) async {
+        var lastMessage: String?
 
-    static var lastBeatSuccessful = false
-
-    /// Start the heartbeat loop. Safe to call multiple times — ignored if a task is already active.
-    static func start() async {
-        guard await state.tryStart() else {
-            return
-        }
-
-        verboseLog("[minimuxer] Starting heartbeat task...")
-        Task.detached {
-            verboseLog("[minimuxer] heartbeat-task: started")
-
-            await heartbeatLoop()
-
-            await state.terminate()
-            lastBeatSuccessful = false
-            verboseLog("[minimuxer] heartbeat-task: stopped")
-        }
-    }
-
-    /// Signal the heartbeat task to stop. The task will exit on next iteration.
-    static func stop() async {
-        await state.stop()
-        lastBeatSuccessful = false
-        verboseLog("[minimuxer] HeartbeatService stop requested")
-    }
-
-    private static func logIfNeeded(_ message: String, isVerbose: Bool = false) {
-        if message != lastErrorDescription {
+        func logIfNeeded(_ message: String, isVerbose: Bool = false) {
+            guard message != lastMessage else { return }
+            let prefix = "[minimuxer] heartbeat-task: \(message) " +
+                "session=\(sessionID)"
             if isVerbose {
-                verboseLog("[minimuxer] heartbeat-task: \(message)")
+                verboseLog(prefix)
             } else {
-                debugLog("[minimuxer] heartbeat-task: \(message)")
+                debugLog(prefix)
             }
-            lastErrorDescription = message
+            lastMessage = message
+        }
+
+        while !Task.isCancelled && !MuxerService.isListening {
+            logIfNeeded("waitingForUsbmuxd", isVerbose: true)
+            guard await sleepBeforeReconnect() else { return }
+        }
+        guard !Task.isCancelled else { return }
+
+        var wasReady = false
+        while !Task.isCancelled {
+            guard MuxerService.isListening else {
+                logIfNeeded("waitingForUsbmuxd", isVerbose: true)
+                if wasReady {
+                    wasReady = false
+                    await eventSink(.disconnected)
+                }
+                guard await sleepBeforeReconnect() else { return }
+                continue
+            }
+
+            let client: OpaquePointer
+            do {
+                client = try IdeviceGateway.shared.connectLockdownHeartbeat()
+                lastMessage = nil
+                verboseLog(
+                    "[minimuxer] heartbeat-task: connected " +
+                    "session=\(sessionID)"
+                )
+            } catch {
+                logIfNeeded(
+                    "connectFailed error=\(error.localizedDescription)"
+                )
+                guard await sleepBeforeReconnect() else { return }
+                continue
+            }
+
+            var receiveTimeout = HeartbeatTiming.initialReceiveTimeoutSeconds
+            do {
+                while !Task.isCancelled {
+                    let requestedInterval = try IdeviceGateway.shared
+                        .exchangeHeartbeat(
+                            client: client,
+                            interval: receiveTimeout
+                        )
+                    receiveTimeout = HeartbeatTiming.receiveTimeoutSeconds(
+                        forRequestedInterval: requestedInterval
+                    )
+                    if !wasReady {
+                        wasReady = true
+                        lastMessage = nil
+                        debugLog(
+                            "[minimuxer] heartbeat-task: " +
+                            "marcoReceived poloSent ready " +
+                            "session=\(sessionID) " +
+                            "nextInterval=\(requestedInterval) " +
+                            "receiveTimeout=\(receiveTimeout)"
+                        )
+                        await eventSink(.ready)
+                    }
+                }
+            } catch {
+                logIfNeeded(
+                    "serviceDisconnected error=\(error.localizedDescription)"
+                )
+                if wasReady {
+                    wasReady = false
+                    await eventSink(.disconnected)
+                }
+            }
+
+            IdeviceGateway.shared.disconnectHeartbeat(client)
+            guard !Task.isCancelled else { return }
+            guard await sleepBeforeReconnect() else { return }
         }
     }
 
-    private static func heartbeatLoop() async {
-        while !MuxerService.isListening {
-            logIfNeeded("Waiting for usbmuxd to be ready...", isVerbose: true)
-            try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
-        }
-        verboseLog("[minimuxer] heartbeat-task: usbmuxd is ready")
-
-        var currentInterval: UInt64 = 1000
-
-        while await state.running {
-            let tunnelPeerIp: String
-            do {
-                tunnelPeerIp = try await DeviceEndpoint.shared.ip()
-            } catch {
-                logIfNeeded("device IP unavailable", isVerbose: true)
-                lastBeatSuccessful = false
-                try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
-                continue
-            }
-            
-            // verify tunnel/device reachability first
-            if !Minimuxer.shared.testDeviceConnection(ifaddr: tunnelPeerIp) {
-                logIfNeeded("device IP not reachable, waiting...", isVerbose: true)
-                lastBeatSuccessful = false
-                try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
-                continue
-            }
-
-            do {
-                var newInterval: UInt64 = 0
-                try IdeviceGateway.shared.performHeartbeat(interval: currentInterval, newInterval: &newInterval)
-                currentInterval = newInterval > 0 ? newInterval : 1000
-                lastBeatSuccessful = true
-                lastErrorDescription = nil
-            } catch {
-                logIfNeeded("Heartbeat failed: \(error)")
-                lastBeatSuccessful = false
-                try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
-            }
+    private static func sleepBeforeReconnect() async -> Bool {
+        do {
+            try await Task.sleep(
+                nanoseconds: MinimuxerConstants.heartbeatSleepNs
+            )
+            return true
+        } catch {
+            return false
         }
     }
 }
