@@ -8,6 +8,7 @@
 
 import Foundation
 import IDevice
+import MinimuxerDomain
 
 internal enum IdeviceGatewayError: LocalizedError {
     case invalidPairingFile(reason: String)
@@ -1653,15 +1654,14 @@ internal final class IdeviceGateway {
                   let dict = try? PropertyListSerialization.propertyList(from: xml, options: [], format: nil) as? [String: Any]
             else { continue }
             
-            let mountPath = dict["MountPath"] as? String
-            let imageType = dict["PersonalizedImageType"] as? String
-            let diskType = dict["DiskImageType"] as? String
-            
-            let mountPathMatches = mountPath == "/System/Developer"
-            let imageTypeMatches = imageType == "DeveloperDiskImage"
-            let diskTypeMatches = (diskType == nil || diskType == "Personalized")
-            
-            if mountPathMatches && imageTypeMatches && diskTypeMatches {
+            let descriptor = DeveloperDiskImageMountDescriptor(
+                mountPath: dict["MountPath"] as? String,
+                personalizedImageType: dict["PersonalizedImageType"] as? String,
+                diskImageType: dict["DiskImageType"] as? String,
+                isMounted: dict["IsMounted"] as? Bool
+            )
+
+            if descriptor.representsMountedDeveloperImage {
                 return true
             }
         }

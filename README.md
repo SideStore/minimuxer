@@ -7,10 +7,14 @@
 ## Architecture
 
 ```
+Domain/
+├── HeartbeatTiming.swift             ← Heartbeat receive deadline policy
+└── DeveloperDiskImageMountDescriptor.swift ← Legacy/personalized DDI detection
 Sources/
 ├── MinimuxerApi.swift               ← Public API contracts (Minimuxer, NetworkObserver, WirelessPair)
 ├── MinimuxerImpl.swift              ← Core Minimuxer API implementation
 ├── IdeviceGateway.swift             ← Gateway layer communicating with IDevice C/FFI library
+├── LockdownSessionRuntime.swift      ← Lockdown readiness, leases, and heartbeat lifecycle
 ├── MinimuxerConstants.swift         ← Constants & default configurations
 ├── MinimuxerError.swift             ← Public error definitions
 ├── Services/
