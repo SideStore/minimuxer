@@ -48,7 +48,10 @@ let package = Package(
         ),
         .testTarget(
             name: "MinimuxerTests",
-            dependencies: ["Minimuxer"],
+            dependencies: [
+                "Minimuxer",
+                .product(name: "MinimuxerCommon", package: "Common")
+            ],
             path: "Tests"
         )
     ],

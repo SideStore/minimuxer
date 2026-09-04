@@ -38,6 +38,7 @@ public struct ConnectionConfigBinding: Sendable {
     public let getConnectionMode: @Sendable () -> DeviceConnectionMode
     public let getOverrideTunnelPeerIp: @Sendable () -> String
     public let getRemoteServerIp: @Sendable () -> String
+    public let getTCPProbeTimeoutMs: @Sendable () -> Int
 
     public init(
         setTunnelIfaceIp: @escaping @Sendable (String?) -> Void,
@@ -49,7 +50,8 @@ public struct ConnectionConfigBinding: Sendable {
         setRemoteReachable: @escaping @Sendable (Bool) -> Void,
         getOverrideTunnelPeerIp: @escaping @Sendable () -> String,
         setOverrideTunnelPeerReachable: @escaping @Sendable (Bool) -> Void,
-        getConnectionMode: @escaping @Sendable () -> DeviceConnectionMode
+        getConnectionMode: @escaping @Sendable () -> DeviceConnectionMode,
+        getTCPProbeTimeoutMs: @escaping @Sendable () -> Int = { MinimuxerConstants.defaultTCPProbeTimeoutMs }
     ) {
         self.setTunnelIfaceIp = setTunnelIfaceIp
         self.setTunnelPeerIp = setTunnelPeerIp
@@ -61,6 +63,7 @@ public struct ConnectionConfigBinding: Sendable {
         self.getOverrideTunnelPeerIp = getOverrideTunnelPeerIp
         self.setOverrideTunnelPeerReachable = setOverrideTunnelPeerReachable
         self.getConnectionMode = getConnectionMode
+        self.getTCPProbeTimeoutMs = getTCPProbeTimeoutMs
     }
 }
 
@@ -196,7 +199,12 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
         )
 
         let mounter = Mounter(gateway: gateway, proxyServer: proxyServer, endpoint: endpoint)
-        let heartbeat = HeartbeatService(gateway: gateway, proxyServer: proxyServer, endpoint: endpoint)
+        let heartbeat = HeartbeatService(
+            gateway: gateway,
+            proxyServer: proxyServer,
+            endpoint: endpoint,
+            connectionManager: connectionManager
+        )
         let wirelessPair = WirelessPairService(gateway: gateway)
 
         let impl = MinimuxerImpl(

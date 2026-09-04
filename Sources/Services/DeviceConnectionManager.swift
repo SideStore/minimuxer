@@ -43,12 +43,22 @@ actor DeviceConnectionManager {
           • mode: .\(connectionMode) 
           • overrideTunnelPeerIp: \(binding.getOverrideTunnelPeerIp()) 
           • remoteServerIp: \(binding.getRemoteServerIp()) 
+          • tcpProbeTimeoutMs: \(binding.getTCPProbeTimeoutMs())
         
         """)
     }
     
     func getPreferredConnectionMode() -> DeviceConnectionMode {
         connectionConfigCache?.getConnectionMode() ?? .notConfigured
+    }
+
+    func testDeviceConnection(ifaddr: String?) -> Bool {
+        let timeoutMs = connectionConfigCache?.getTCPProbeTimeoutMs() ?? MinimuxerConstants.defaultTCPProbeTimeoutMs
+        return NetworkUtils.testDeviceConnection(
+            ifaddr: ifaddr,
+            isRPPairing: gateway.isRPPairing,
+            timeoutMs: timeoutMs
+        )
     }
 
     @discardableResult
@@ -83,7 +93,7 @@ actor DeviceConnectionManager {
 
                 let rawOverrideIp = connectionConfigCache?.getOverrideTunnelPeerIp()
                 overridePeerIp = (rawOverrideIp?.isEmpty ?? true) ? nil : rawOverrideIp
-                isOverridePeerIpReachable = NetworkUtils.testDeviceConnection(ifaddr: overridePeerIp, isRPPairing: self.gateway.isRPPairing)
+                isOverridePeerIpReachable = testDeviceConnection(ifaddr: overridePeerIp)
             
                 let isOverrideIpUnchanged = lastOverrideIp == overridePeerIp
                 let isDerivedIpUnchanged = lastDerivedPeer == derivedPeerIp && lastDerivedPeerMask == derivedPeerSubnetMask
@@ -129,7 +139,7 @@ actor DeviceConnectionManager {
             case .remoteServer:
                 let rawServerIp = connectionConfigCache?.getRemoteServerIp()
                 let serverIp = (rawServerIp?.isEmpty ?? true) ? nil : rawServerIp
-                let reachable = NetworkUtils.testDeviceConnection(ifaddr: serverIp, isRPPairing: self.gateway.isRPPairing)
+                let reachable = testDeviceConnection(ifaddr: serverIp)
                 if self.lastConnectionMode == connectionMode && serverIp == remoteServerIp && reachable == isRemoteServerIpReachable {
                     debugLog("[minimuxer] [iface] no remote server state changes detected, skipping refresh")
                     return false
@@ -176,7 +186,7 @@ actor DeviceConnectionManager {
         for tunnel in tunnels {
             let candidates = resolveCandidatePeers(for: tunnel)
             for candidate in candidates {
-                if NetworkUtils.testDeviceConnection(ifaddr: candidate.ip, isRPPairing: self.gateway.isRPPairing) {
+                if testDeviceConnection(ifaddr: candidate.ip) {
                     return (tunnel, candidate, true)
                 }
             }

@@ -189,7 +189,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             }
         }
         
-        let peerReachable = testDeviceConnection(ifaddr: deviceIp)
+        let peerReachable = await connectionManager.testDeviceConnection(ifaddr: deviceIp)
         if !peerReachable {
             switch connectionMode {
             case .localVPN:

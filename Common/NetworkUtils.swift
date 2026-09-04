@@ -10,7 +10,11 @@ import Foundation
 
 public enum NetworkUtils {
     /// Probes whether a TCP port is open on IPv4 or IPv6 with a millisecond timeout.
-    public static func testTCP(ip: String, port: UInt16, timeoutMs: Int = 100) -> Bool {
+    public static func testTCP(
+        ip: String,
+        port: UInt16,
+        timeoutMs: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs
+    ) -> Bool {
         guard !ip.isEmpty else {
             verboseLog("[minimuxer] [net] testTCP empty IP address")
             return false
@@ -89,19 +93,27 @@ public enum NetworkUtils {
     }
 
     // Verifies device reachability on a specific port
-    public static func testDeviceConnection(ifaddr: String?, port: UInt16) -> Bool {
+    public static func testDeviceConnection(
+        ifaddr: String?,
+        port: UInt16,
+        timeoutMs: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs
+    ) -> Bool {
         guard let ip = ifaddr, !ip.isEmpty else {
             verboseLog("[minimuxer] [net] testDeviceConnection(nil/empty:\(port)) -> unreachable")
             return false
         }
-        let reachable = testTCP(ip: ip, port: port)
+        let reachable = testTCP(ip: ip, port: port, timeoutMs: timeoutMs)
         verboseLog("[minimuxer] [net] testDeviceConnection(\(ip):\(port)) -> \(reachable ? "reachable" : "unreachable")")
         return reachable
     }
 
     // Verifies device reachability on a specific port
-    public static func testDeviceConnection(ifaddr: String?, isRPPairing: Bool) -> Bool {
+    public static func testDeviceConnection(
+        ifaddr: String?,
+        isRPPairing: Bool,
+        timeoutMs: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs
+    ) -> Bool {
         let targetPort = isRPPairing ? MinimuxerConstants.remotePairingPort : MinimuxerConstants.lockdowndPort
-        return testDeviceConnection(ifaddr: ifaddr, port: targetPort)
+        return testDeviceConnection(ifaddr: ifaddr, port: targetPort, timeoutMs: timeoutMs)
     }
 }

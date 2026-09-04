@@ -14,11 +14,18 @@ final internal class HeartbeatService {
     let gateway: any DeviceGatewayAPI
     let proxyServer: UsbmuxdProxyServer
     let endpoint: DeviceEndpoint
+    let connectionManager: DeviceConnectionManager
 
-    init(gateway: any DeviceGatewayAPI, proxyServer: UsbmuxdProxyServer, endpoint: DeviceEndpoint) {
+    init(
+        gateway: any DeviceGatewayAPI,
+        proxyServer: UsbmuxdProxyServer,
+        endpoint: DeviceEndpoint,
+        connectionManager: DeviceConnectionManager
+    ) {
         self.gateway = gateway
         self.proxyServer = proxyServer
         self.endpoint = endpoint
+        self.connectionManager = connectionManager
     }
     
     private actor MutableState {
@@ -108,7 +115,7 @@ final internal class HeartbeatService {
             }
             
             // verify tunnel/device reachability first
-            if !NetworkUtils.testDeviceConnection(ifaddr: tunnelPeerIp, isRPPairing: self.gateway.isRPPairing) {
+            if !(await connectionManager.testDeviceConnection(ifaddr: tunnelPeerIp)) {
                 logIfNeeded("device IP not reachable, waiting...", isVerbose: true)
                 lastBeatSuccessful = false
                 try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
