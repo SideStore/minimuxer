@@ -60,7 +60,7 @@ actor DeviceConnectionManager {
         connectionConfigCache?.getConnectionMode() ?? .notConfigured
     }
 
-    private func tcpProbe(_ ip: String?) -> Bool {
+    nonisolated private func tcpProbe(_ ip: String?) -> Bool {
         guard let ip, !ip.isEmpty else {
             debugLog("[minimuxer] [iface] tcpProbe skipped — IP is nil or empty")
             return false
@@ -94,7 +94,7 @@ actor DeviceConnectionManager {
                 // set new states
                 interfacesCache = NetworkIfaceScanner.scan(quiet: quietScan)
                 
-                let (resolvedTunnel, candidatePeer, isDerivedReachable) = resolveLocalVPNTunnel(from: interfacesCache)
+                let (resolvedTunnel, candidatePeer, isDerivedReachable) = await resolveLocalVPNTunnel(from: interfacesCache)
                 vpnIface = resolvedTunnel
                 reportedPeerIp = resolvedTunnel?.linkLayerDestinationIP?.v4?.host
                 derivedPeerIp = candidatePeer?.ip
@@ -179,12 +179,13 @@ actor DeviceConnectionManager {
         }
     }
 
-    private struct CandidatePeer: Equatable {
+    private struct CandidatePeer: Equatable, Sendable {
+        let tunnel: TunnelNetInfo
         let ip: String
         let mask: String?
     }
 
-    private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
+    private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) async -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
         // Device connection strictly operates on IPv4 utun tunnels only
         let tunnels = interfaces
             .compactMap { $0 as? TunnelNetInfo }
@@ -195,14 +196,24 @@ actor DeviceConnectionManager {
             .sorted { $0.name < $1.name }
         guard !tunnels.isEmpty else { return (nil, nil, false) }
 
-        // 1. Evaluate candidate tunnels against reachable endpoints
-        for tunnel in tunnels {
-            let candidates = resolveCandidatePeers(for: tunnel)
+        // pick all candidate peer ips
+        let candidates = tunnels.flatMap { resolveCandidatePeers(for: $0) }
+        guard !candidates.isEmpty else { return (nil, nil, false) }
+
+        // parallelized tcp service port probing on all candidate ips
+        let resolved = await withTaskGroup(of: CandidatePeer?.self) { group in
             for candidate in candidates {
-                if tcpProbe(candidate.ip) {
-                    return (tunnel, candidate, true)
-                }
+                group.addTask { self.tcpProbe(candidate.ip) ? candidate : nil }
             }
+            for await case let candidate? in group {
+                group.cancelAll()
+                return candidate
+            }
+            return nil
+        }
+
+        if let resolved {
+            return (resolved.tunnel, resolved, true)
         }
 
         return (nil, nil, false)
@@ -231,7 +242,8 @@ actor DeviceConnectionManager {
         func addCandidate(_ ip: String?, mask: String?) {
             guard let ip = ip, isValidCandidatePeer(ip, for: tunnel), !seen.contains(ip) else { return }
             seen.insert(ip)
-            candidates.append(CandidatePeer(ip: ip, mask: mask))
+            let candidate = CandidatePeer(tunnel: tunnel, ip: ip, mask: mask)
+            candidates.append(candidate)
         }
 
         // Priority 1: Destination Gateway from route table
