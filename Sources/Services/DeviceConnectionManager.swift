@@ -221,12 +221,12 @@ actor DeviceConnectionManager {
 
     private func isValidCandidatePeer(_ ip: String, for tunnel: TunnelNetInfo) -> Bool {
         guard !ip.isEmpty,
-               ip != "0.0.0.0",
-               ip != "default",
-               ip != "255.255.255.255",
-              !ip.hasPrefix("127."),
-              !ip.hasPrefix("224."),
-              !ip.hasPrefix("239.") else 
+               ip != "0.0.0.0",             // reject catch all  addr (not unicast connectable)
+               ip != "default",             // reject default    addr (not unicast connectable)
+               ip != "255.255.255.255",     // reject broadcast  addr (not unicast connectable)
+              !ip.hasPrefix("127."),        // reject localhost  addr (not preferred coz ourself)
+              !ip.hasPrefix("224."),        // reject multicast  addr (not unicast connectable)
+              !ip.hasPrefix("239.") else    // private multicast addr (not unicast connectable)
         {
             return false
         }
