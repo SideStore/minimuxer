@@ -201,7 +201,7 @@ actor DeviceConnectionManager {
         guard !candidates.isEmpty else { return (nil, nil, false) }
 
         // parallelized tcp service port probing on all candidate ips
-        let resolved = await withTaskGroup(of: CandidatePeer?.self) { group in
+        let resolved = await withTaskGroup(of: CandidatePeer?.self, returning: CandidatePeer?.self) { group in
             for candidate in candidates {
                 group.addTask { self.tcpProbe(candidate.ip) ? candidate : nil }
             }
