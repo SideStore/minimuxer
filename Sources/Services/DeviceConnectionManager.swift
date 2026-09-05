@@ -188,7 +188,10 @@ actor DeviceConnectionManager {
         // Device connection strictly operates on IPv4 utun tunnels only
         let tunnels = interfaces
             .compactMap { $0 as? TunnelNetInfo }
-            .filter { $0.tunnelType == .utun && !$0.interfaceAddresses.v4.isEmpty }
+            .filter { 
+                 $0.tunnelType == .utun && 
+                !$0.interfaceAddresses.v4.isEmpty && $0.interfaceAddresses.v6.isEmpty 
+            }
             .sorted { $0.name < $1.name }
         guard !tunnels.isEmpty else { return (nil, nil, false) }
 
