@@ -169,6 +169,19 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
         let resolvedPort = remotePairingPort ?? currentRemotePairingPort
         let resolvedTimeout = deviceProbeTimeout ?? currentDeviceProbeTimeout
 
+        if let cached = cachedInstance, currentBackend == resolvedBackend {
+            currentRemotePairingPort = resolvedPort
+            currentDeviceProbeTimeout = resolvedTimeout
+            switch resolvedBackend {
+            case .libimobiledevice:
+                LibimobiledeviceGateway.shared.setPort(resolvedPort, for: .rppairing)
+            case .idevice:
+                IdeviceGateway.shared.setPort(resolvedPort, for: .rppairing)
+            }
+            cached.core.setDeviceProbeTimeout(resolvedTimeout)
+            return cached
+        }
+
         currentBackend = resolvedBackend
         currentRemotePairingPort = resolvedPort
         currentDeviceProbeTimeout = resolvedTimeout
@@ -180,10 +193,6 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
             IdeviceGateway.shared.setPort(resolvedPort, for: .rppairing)
         }
 
-        if let cached = cachedInstance, currentBackend == resolvedBackend {
-            cached.core.setDeviceProbeTimeout(resolvedTimeout)
-            return cached
-        }
         let instance = createInstance(backend: resolvedBackend, deviceProbeTimeout: resolvedTimeout)
         cachedInstance = instance
         return instance
