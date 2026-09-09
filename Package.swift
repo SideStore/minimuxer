@@ -25,7 +25,7 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "EMProxy",
-            url: "https://github.com/SideStore/em_proxy/releases/download/v0.9.3/EMProxy.xcframework.zip",
+            url: "https://github.com/SideStore/em_proxy/releases/download/v0.9.3/EMProxy.xcframework.zip#Minimuxer",
             checksum: "3998789c38d09b55e488d46e31897affc7bbcb9c244d7a9d5b2d5cf6afd916c3"
         ),
 //         .binaryTarget(
