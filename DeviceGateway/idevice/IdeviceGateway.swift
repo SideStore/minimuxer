@@ -205,7 +205,13 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                 cleanIp = String(cleanIp[..<scopeRange.lowerBound])
                 addr6.sin6_scope_id = if_nametoindex(ifaceName)
             } else if cleanIp.lowercased().hasPrefix("fe80:") {
-                addr6.sin6_scope_id = if_nametoindex("en0")
+                let en0Idx = if_nametoindex("en0")
+                if en0Idx != 0 {
+                    addr6.sin6_scope_id = en0Idx
+                } else {
+                    let awdl0Idx = if_nametoindex("awdl0")
+                    addr6.sin6_scope_id = awdl0Idx != 0 ? awdl0Idx : if_nametoindex("lo0")
+                }
             }
             
             guard inet_pton(AF_INET6, cleanIp, &addr6.sin6_addr) == 1 else {
@@ -542,13 +548,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
             throw IdeviceGatewayError(.deviceEndpointIpNotAvailable)
         }
         
-        var sockAddr = sockaddr_in()
-        sockAddr.sin_family = sa_family_t(AF_INET)
-        sockAddr.sin_port = MinimuxerConstants.lockdowndPort.bigEndian
-        sockAddr.sin_addr.s_addr = inet_addr(deviceEndpointIp)
-        #if os(macOS) || os(iOS)
-        sockAddr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
-        #endif
+
 
         guard let pairingFileData = self.pairingFileData else {
             debugLog("[IdeviceGateway] error: pairingFileData is nil")
@@ -570,8 +570,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         }
 
         var provider: OpaquePointer? = nil
-        let provErr = withUnsafePointer(to: &sockAddr) { ptr in
-            ptr.withMemoryRebound(to: idevice_sockaddr.self, capacity: 1) { reboundPtr in
+        let provErr = try withSockaddr(ip: deviceEndpointIp, port: MinimuxerConstants.lockdowndPort) { sockaddrPtr, _ in
+            sockaddrPtr.withMemoryRebound(to: idevice_sockaddr.self, capacity: 1) { reboundPtr in
                 return idevice_tcp_provider_new(reboundPtr, tempPairingFile, MinimuxerConstants.appName, &provider)
             }
         }
@@ -1493,10 +1493,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
             throw IdeviceGatewayError(.deviceEndpointIpNotAvailable)
         }
 
-        var sockAddr = sockaddr_in()
-        sockAddr.sin_family = sa_family_t(AF_INET)
-        sockAddr.sin_port = MinimuxerConstants.lockdowndPort.bigEndian
-        sockAddr.sin_addr.s_addr = inet_addr(deviceEndpointIp)
+
 
         guard let pairingFileData = self.pairingFileData else {
             debugLog("[IdeviceGateway] error: pairingFileData is nil")
@@ -1519,8 +1516,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
 
         verboseLog("[IdeviceGateway] creating TCP provider to \(deviceEndpointIp):\(MinimuxerConstants.lockdowndPort)...")
         var provider: OpaquePointer? = nil
-        let provErr = withUnsafePointer(to: &sockAddr) { ptr in
-            ptr.withMemoryRebound(to: idevice_sockaddr.self, capacity: 1) { reboundPtr in
+        let provErr = try withSockaddr(ip: deviceEndpointIp, port: MinimuxerConstants.lockdowndPort) { sockaddrPtr, _ in
+            sockaddrPtr.withMemoryRebound(to: idevice_sockaddr.self, capacity: 1) { reboundPtr in
                 return idevice_tcp_provider_new(reboundPtr, tempPairingFile, MinimuxerConstants.appName, &provider)
             }
         }

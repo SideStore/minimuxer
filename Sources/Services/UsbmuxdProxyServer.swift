@@ -241,18 +241,51 @@ final internal class UsbmuxdProxyServer {
         }
     }
 
-    // Encodes an IPv4 address into the 152-byte sockaddr_storage layout that
+    // Encodes an IPv4 or IPv6 address into the 152-byte sockaddr_storage layout that
     // libusbmuxd expects in the NetworkAddress field of the device properties.
     private func convertIp(_ ip: String) -> Data {
-        var sa = sockaddr_in()
-        sa.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        sa.sin_family = sa_family_t(AF_INET)
-
         var data = Data(count: 152)
-        if inet_pton(AF_INET, ip, &sa.sin_addr) == 1 {
-            withUnsafeBytes(of: sa) { src in
-                data.withUnsafeMutableBytes { dst in
-                    dst.copyMemory(from: src)
+        if ip.contains(":") {
+            var sa6 = sockaddr_in6()
+            #if os(macOS) || os(iOS)
+            sa6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            #endif
+            sa6.sin6_family = sa_family_t(AF_INET6)
+
+            var cleanIp = ip
+            if let scopeRange = cleanIp.range(of: "%") {
+                let ifaceName = String(cleanIp[scopeRange.upperBound...])
+                cleanIp = String(cleanIp[..<scopeRange.lowerBound])
+                sa6.sin6_scope_id = if_nametoindex(ifaceName)
+            } else if cleanIp.lowercased().hasPrefix("fe80:") {
+                let en0Idx = if_nametoindex("en0")
+                if en0Idx != 0 {
+                    sa6.sin6_scope_id = en0Idx
+                } else {
+                    let awdl0Idx = if_nametoindex("awdl0")
+                    sa6.sin6_scope_id = awdl0Idx != 0 ? awdl0Idx : if_nametoindex("lo0")
+                }
+            }
+
+            if inet_pton(AF_INET6, cleanIp, &sa6.sin6_addr) == 1 {
+                withUnsafeBytes(of: sa6) { src in
+                    data.withUnsafeMutableBytes { dst in
+                        dst.copyMemory(from: src)
+                    }
+                }
+            }
+        } else {
+            var sa = sockaddr_in()
+            #if os(macOS) || os(iOS)
+            sa.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            #endif
+            sa.sin_family = sa_family_t(AF_INET)
+
+            if inet_pton(AF_INET, ip, &sa.sin_addr) == 1 {
+                withUnsafeBytes(of: sa) { src in
+                    data.withUnsafeMutableBytes { dst in
+                        dst.copyMemory(from: src)
+                    }
                 }
             }
         }

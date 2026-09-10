@@ -26,10 +26,28 @@ public enum NetworkUtils {
         var addr6 = sockaddr_in6()
 
         if isIPv6 {
-            guard inet_pton(AF_INET6, ip, &addr6.sin6_addr) == 1 else {
+            var cleanIp = ip
+            if let scopeRange = cleanIp.range(of: "%") {
+                let ifaceName = String(cleanIp[scopeRange.upperBound...])
+                cleanIp = String(cleanIp[..<scopeRange.lowerBound])
+                addr6.sin6_scope_id = if_nametoindex(ifaceName)
+            } else if cleanIp.lowercased().hasPrefix("fe80:") {
+                let en0Idx = if_nametoindex("en0")
+                if en0Idx != 0 {
+                    addr6.sin6_scope_id = en0Idx
+                } else {
+                    let awdl0Idx = if_nametoindex("awdl0")
+                    addr6.sin6_scope_id = awdl0Idx != 0 ? awdl0Idx : if_nametoindex("lo0")
+                }
+            }
+
+            guard inet_pton(AF_INET6, cleanIp, &addr6.sin6_addr) == 1 else {
                 verboseLog("[minimuxer] [net] testTCP(\(ip):\(port)) invalid IPv6 address")
                 return false
             }
+            #if os(macOS) || os(iOS)
+            addr6.sin6_len = __uint8_t(MemoryLayout<sockaddr_in6>.size)
+            #endif
             addr6.sin6_family = sa_family_t(AF_INET6)
             addr6.sin6_port = port.bigEndian
         } else {
