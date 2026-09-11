@@ -62,3 +62,30 @@
 ```bash
 swift build
 ```
+
+---
+
+## Authors
+
+- [@jkcoxson](https://github.com/jkcoxson)
+- [@mahee96](https://github.com/mahee96)
+- [@nythepegasus](https://github.com/nythepegasus)
+
+---
+
+## Credits and References
+
+- Baseline Rust implementation from [minimuxer](https://github.com/jkcoxson/minimuxer) by [@jkcoxson](https://github.com/jkcoxson)
+- RPPairing initial Rust implementation end-to-end support added in minimuxer by [@hugeblack](https://github.com/hugeblack) backed by Remote Pairing(RPPairing) implementation in `idevice`
+- Swift complete rewrite by [@mahee96](https://github.com/mahee96)
+- VPN auto-discovery initial research by [@nythepegasus](https://github.com/nythepegasus)
+- Enhanced research for end-to-end VPN auto-discovery and probing implementation by [@mahee96](https://github.com/mahee96)
+- Port from `rustylibimobiledevice` bridge to `idevice` bridge by [@mahee96](https://github.com/mahee96)
+- Alternative device-gateway (`libimobiledevicegateway`) bridge implementation backed by `libimobiledevice` by [@mahee96](https://github.com/mahee96)
+- Alternative RPPairing ground-up implementation in C++ (based on spec from [jkcoxson's rppairing-spec](https://jkcoxson.com/blog/rppairing-spec)) called [RemotePairingKit](https://github.com/mahee96/RemotePairingKit) by [@mahee96](https://github.com/mahee96)
+
+---
+
+## License
+
+This project is licensed under the terms of the **GNU Affero General Public License v3.0** (AGPL-3.0).
