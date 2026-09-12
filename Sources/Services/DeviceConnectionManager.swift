@@ -95,8 +95,9 @@ actor DeviceConnectionManager {
                 interfacesCache = NetworkIfaceScanner.scan(quiet: quietScan)
                 
                 let (resolvedTunnel, candidatePeer, isDerivedReachable) = await resolveLocalVPNTunnel(from: interfacesCache)
+                let interfaceAddress = resolvedTunnel.map(Self.preferredInterfaceAddress)
                 vpnIface = resolvedTunnel
-                reportedPeerIp = resolvedTunnel?.linkLayerDestinationIP?.v4?.host
+                reportedPeerIp = resolvedTunnel?.linkLayerDestinationIP?.v4?.host ?? resolvedTunnel?.linkLayerDestinationIP?.v6
                 derivedPeerIp = candidatePeer?.ip
                 derivedPeerSubnetMask = candidatePeer?.mask
                 isDerivedPeerIpReachable = isDerivedReachable
@@ -122,8 +123,8 @@ actor DeviceConnectionManager {
                 debugLog("[minimuxer] [iface] using the first uTun vpn interface info")
                 // set states for this mode
                 // NOTE: we do not alter user configured remote override peer IP
-                connectionConfigCache?.setTunnelIfaceIp(vpnIface?.interfaceAddresses.v4.first?.host)
-                connectionConfigCache?.setTunnelIfaceSubnetMask(vpnIface?.interfaceAddresses.v4.first?.mask)
+                connectionConfigCache?.setTunnelIfaceIp(interfaceAddress?.ip)
+                connectionConfigCache?.setTunnelIfaceSubnetMask(interfaceAddress?.mask)
                 connectionConfigCache?.setTunnelPeerIp(derivedPeerIp)
                 connectionConfigCache?.setTunnelPeerSubnetMask(derivedPeerSubnetMask)
                 connectionConfigCache?.setTunnelPeerReachable(isDerivedPeerIpReachable)
@@ -135,8 +136,8 @@ actor DeviceConnectionManager {
                 [minimuxer] [iface] refresh - rescan routes
                   • mode: .\(connectionMode)
                   • local iface count: \(interfacesCache.count)
-                  • probable-vpn host: \(vpnIface?.interfaceAddresses.v4.first?.host ?? "nil")
-                  • probable-vpn mask: \(vpnIface?.interfaceAddresses.v4.first?.mask ?? "nil")
+                  • probable-vpn host: \(interfaceAddress?.ip ?? "nil")
+                  • probable-vpn mask: \(interfaceAddress?.mask ?? "nil")
                   • probable-vpn destination gateway IP: \(reportedPeerIp ?? "nil")
                   • probable-vpn derived peer IP: \(derivedPeerIp ?? "nil")
                   • probable-vpn derived peer mask: \(derivedPeerSubnetMask ?? "nil")
@@ -179,25 +180,34 @@ actor DeviceConnectionManager {
         }
     }
 
-    private struct CandidatePeer: Equatable, Sendable {
+    struct CandidatePeer: Equatable, Sendable {
         let tunnel: TunnelNetInfo
         let ip: String
         let mask: String?
     }
 
+    nonisolated static func isEligibleLocalVPNTunnel(_ tunnel: TunnelNetInfo) -> Bool {
+        tunnel.tunnelType == .utun &&
+            (!tunnel.interfaceAddresses.v4.isEmpty || !tunnel.interfaceAddresses.v6.isEmpty)
+    }
+
+    nonisolated static func preferredInterfaceAddress(for tunnel: TunnelNetInfo) -> (ip: String?, mask: String?) {
+        if let ipv4 = tunnel.interfaceAddresses.v4.first {
+            return (ipv4.host, ipv4.mask)
+        }
+        return (tunnel.interfaceAddresses.v6.first, nil)
+    }
+
     private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) async -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
-        // Device connection strictly operates on IPv4 utun tunnels only
+        // Device connection operates on utun tunnels with at least one IP address.
         let tunnels = interfaces
             .compactMap { $0 as? TunnelNetInfo }
-            .filter { 
-                 $0.tunnelType == .utun && 
-                !$0.interfaceAddresses.v4.isEmpty && $0.interfaceAddresses.v6.isEmpty 
-            }
+            .filter(Self.isEligibleLocalVPNTunnel)
             .sorted { $0.name < $1.name }
         guard !tunnels.isEmpty else { return (nil, nil, false) }
 
         // pick all candidate peer ips
-        let candidates = tunnels.flatMap { resolveCandidatePeers(for: $0) }
+        let candidates = tunnels.flatMap(Self.resolveCandidatePeers)
         guard !candidates.isEmpty else { return (nil, nil, false) }
 
         // parallelized tcp service port probing on all candidate ips
@@ -219,43 +229,65 @@ actor DeviceConnectionManager {
         return (nil, nil, false)
     }
 
-    private func isValidCandidatePeer(_ ip: String, for tunnel: TunnelNetInfo) -> Bool {
-        guard !ip.isEmpty,
-               ip != "0.0.0.0",             // reject catch all  addr (not unicast connectable)
-               ip != "default",             // reject default    addr (not unicast connectable)
-               ip != "255.255.255.255",     // reject broadcast  addr (not unicast connectable)
-              !ip.hasPrefix("127."),        // reject localhost  addr (not preferred coz ourself)
-              !ip.hasPrefix("224."),        // reject multicast  addr (not unicast connectable)
-              !ip.hasPrefix("239.") else    // private multicast addr (not unicast connectable)
+    nonisolated private static func normalizedIPAddress(_ ip: String) -> String {
+        let address = ip.split(separator: "%", maxSplits: 1).first.map(String.init) ?? ""
+        return address.lowercased()
+    }
+
+    nonisolated static func isValidCandidatePeer(_ ip: String, for tunnel: TunnelNetInfo) -> Bool {
+        let normalizedIP = normalizedIPAddress(ip)
+        guard !normalizedIP.isEmpty,
+              normalizedIP != "0.0.0.0",         // reject catch all addr (not unicast connectable)
+              normalizedIP != "default",         // reject default addr (not unicast connectable)
+              normalizedIP != "255.255.255.255", // reject broadcast addr (not unicast connectable)
+              normalizedIP != "::",              // reject IPv6 unspecified addr (not unicast connectable)
+              normalizedIP != "::1",             // reject IPv6 localhost addr (not preferred coz ourself)
+              !normalizedIP.hasPrefix("127."),    // reject IPv4 localhost addr (not preferred coz ourself)
+              !normalizedIP.hasPrefix("224."),    // reject IPv4 multicast addr (not unicast connectable)
+              !normalizedIP.hasPrefix("239."),    // reject IPv4 private multicast addr (not unicast connectable)
+              !normalizedIP.hasPrefix("ff") else  // reject IPv6 multicast addr (not unicast connectable)
         {
             return false
         }
+
         // Reject self-addresses
-        let isSelf = tunnel.interfaceAddresses.v4.contains { $0.host == ip }
-        return !isSelf
+        let isIPv4Self = tunnel.interfaceAddresses.v4.contains {
+            normalizedIPAddress($0.host) == normalizedIP
+        }
+        let isIPv6Self = tunnel.interfaceAddresses.v6.contains {
+            normalizedIPAddress($0) == normalizedIP
+        }
+        return !isIPv4Self && !isIPv6Self
     }
 
-    private func resolveCandidatePeers(for tunnel: TunnelNetInfo) -> [CandidatePeer] {
+    nonisolated static func resolveCandidatePeers(for tunnel: TunnelNetInfo) -> [CandidatePeer] {
         var candidates: [CandidatePeer] = []
         var seen = Set<String>()
 
         func addCandidate(_ ip: String?, mask: String?) {
-            guard let ip = ip, isValidCandidatePeer(ip, for: tunnel), !seen.contains(ip) else { return }
-            seen.insert(ip)
+            guard let ip = ip, isValidCandidatePeer(ip, for: tunnel) else { return }
+            let normalizedIP = normalizedIPAddress(ip)
+            guard !seen.contains(normalizedIP) else { return }
+            seen.insert(normalizedIP)
             let candidate = CandidatePeer(tunnel: tunnel, ip: ip, mask: mask)
             candidates.append(candidate)
         }
 
-        // Priority 1: Destination Gateway from route table
+        // Prefer IPv4 candidates while considering the same sources for IPv6.
         for route in tunnel.destinationRoutes {
             addCandidate(route.gatewayIPv4, mask: "255.255.255.255")
         }
-        // Priority 2: Target Destination IP from route table (preserves route destination subnet mask)
         for route in tunnel.destinationRoutes {
             addCandidate(route.destinationIPv4, mask: route.destinationIPv4Mask)
         }
-        // Priority 3: Point-to-point link layer destination
         addCandidate(tunnel.linkLayerDestinationIP?.v4?.host, mask: "255.255.255.255")
+        for route in tunnel.destinationRoutes {
+            addCandidate(route.gatewayIPv6, mask: nil)
+        }
+        for route in tunnel.destinationRoutes {
+            addCandidate(route.destinationIPv6, mask: nil)
+        }
+        addCandidate(tunnel.linkLayerDestinationIP?.v6, mask: nil)
 
         return candidates
     }
