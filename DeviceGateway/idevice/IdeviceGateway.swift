@@ -1311,7 +1311,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         if major < 17 {
             try launchAppPre17(appId: appId)
         } else {
-            let (_, bundlePath, executableName) = (try? getAppPaths(appId: appId)) ?? ("", "", nil)
+            let (_, bundlePath, executableName) = try getAppPaths(appId: appId)
             try performWithEitherService(
                 connectRP: debug_proxy_connect_rsd,
                 connectLockdown: { [weak self] _, _ in
@@ -1329,9 +1329,10 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                         try self.sendDebugProxyCommand(client: client, name: name, args: args)
                     }
                 ) else {
+                    let targetName = executableName ?? appId
                     throw IdeviceGatewayError(
                         .serviceError,
-                        reason: "App is not running. Please open the app and keep it in the background, then enable JIT."
+                        reason: "App '\(targetName)' is not running. Please open the app and keep it in the background, then enable JIT."
                     )
                 }
                 if pid > 0 {

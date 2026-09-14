@@ -1196,7 +1196,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
             ) else {
                 throw LibimobiledeviceGatewayError(
                     .serviceError,
-                    reason: "App is not running. Please open the app and keep it in the background, then enable JIT."
+                    reason: "App '\(appId)' is not running. Please open the app and keep it in the background, then enable JIT."
                 )
             }
             if pid > 0 {

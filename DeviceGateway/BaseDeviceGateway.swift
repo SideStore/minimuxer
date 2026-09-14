@@ -183,7 +183,7 @@ extension BaseDeviceGateway {
 
         if let bundlePath, !bundlePath.isEmpty {
             let lastComponent = URL(fileURLWithPath: bundlePath).deletingPathExtension().lastPathComponent
-            if !lastComponent.isEmpty && !targetTerms.contains(lastComponent) {
+            if !lastComponent.isEmpty && lastComponent != "App" && !targetTerms.contains(lastComponent) {
                 targetTerms.append(lastComponent)
             }
         }
@@ -195,12 +195,12 @@ extension BaseDeviceGateway {
             if str.count == 10 && str.allSatisfy({ $0.isLetter || $0.isNumber }) && str.uppercased() == str {
                 continue
             }
-            if !targetTerms.contains(str) {
-                targetTerms.append(str)
-            }
             let stripped = str.trimmingCharacters(in: .decimalDigits)
             if !stripped.isEmpty && stripped != str && !targetTerms.contains(stripped) {
                 targetTerms.append(stripped)
+            }
+            if !targetTerms.contains(str) {
+                targetTerms.append(str)
             }
         }
 
@@ -218,54 +218,22 @@ extension BaseDeviceGateway {
 
         verboseLog("[\(logTag)] findProcessPID() target search terms: \(targetTerms)")
 
-        // 1. Query process list via qfProcessInfo / qsProcessInfo
-        var queryCommands = [
-            "qfProcessInfo:all_users:1;",
-            "qfProcessInfo:all_users:1"
-        ]
+        // Direct attach via RSP vAttachName
         for term in targetTerms {
             let hex = Self.stringToHex(term)
-            queryCommands.append("qfProcessInfo:name:\(hex);")
-            queryCommands.append("qfProcessInfo:name_match:contains;name:\(hex);")
-            queryCommands.append("qfProcessInfo:name_match:starts_with;name:\(hex);")
-            queryCommands.append("qfProcessInfo:name_match:equals;name:\(hex);")
-            queryCommands.append("qfProcessInfo:name:\(hex)")
-        }
+            let attachCmd = "vAttachName;\(hex)"
+            debugLog("[\(logTag)] findProcessPID() trying direct attach: '\(attachCmd)' for term '\(term)'")
 
-        for queryCmd in queryCommands {
-            debugLog("[\(logTag)] findProcessPID() trying query: '\(queryCmd)'")
-            var currentResponse = try? sendCommand(queryCmd, [])
-
-            while let resp = currentResponse, let proc = RSPProcessInfo(rawResponse: resp) {
-                verboseLog("[\(logTag)] findProcessPID() found process: pid=\(proc.pid), name='\(proc.name)', exec='\(proc.executable)'")
-                for term in targetTerms {
-                    if proc.matches(term: term) {
-                        debugLog("[\(logTag)] findProcessPID() matched PID \(proc.pid) for '\(term)'")
-                        return proc.pid
-                    }
-                }
-                currentResponse = try? sendCommand("qsProcessInfo", [])
+            guard let attachResp = try? sendCommand(attachCmd, []),
+                  !attachResp.isEmpty,
+                  !attachResp.hasPrefix("E")
+            else {
+                continue
             }
-        }
 
-        // 2. Direct attach fallback by name
-        for term in targetTerms {
-            let hex = Self.stringToHex(term)
-            let attachCommands = [
-                "vAttachName;\(hex)",
-                "vAttachWait;\(hex)"
-            ]
-            for attachCmd in attachCommands {
-                debugLog("[\(logTag)] findProcessPID() trying direct attach: '\(attachCmd)'")
-                if let attachResp = try? sendCommand(attachCmd, []),
-                   !attachResp.isEmpty,
-                   !attachResp.hasPrefix("E") 
-                {
-                    debugLog("[\(logTag)] findProcessPID() direct attach succeeded: '\(attachResp)'")
-                    _ = try? sendCommand("D", [])
-                    return 0
-                }
-            }
+            debugLog("[\(logTag)] findProcessPID() direct attach succeeded: '\(attachResp)'")
+            _ = try? sendCommand("D", [])
+            return 0
         }
 
         debugLog("[\(logTag)] findProcessPID() no running process found for \(appId)")
