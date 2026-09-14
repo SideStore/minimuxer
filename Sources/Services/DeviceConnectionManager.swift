@@ -179,25 +179,29 @@ actor DeviceConnectionManager {
         }
     }
 
-    private struct CandidatePeer: Equatable, Sendable {
+    struct CandidatePeer: Equatable, Sendable {
         let tunnel: TunnelNetInfo
         let ip: String
         let mask: String?
     }
 
-    private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) async -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
-        // Device connection strictly operates on IPv4 utun tunnels only
-        let tunnels = interfaces
+    static func resolveCandidateTunnels(from interfaces: Set<NetInfo>) -> [TunnelNetInfo] {
+        interfaces
             .compactMap { $0 as? TunnelNetInfo }
             .filter { 
-                 $0.tunnelType == .utun && 
+                $0.tunnelType == .utun && 
                 !$0.interfaceAddresses.v4.isEmpty && $0.interfaceAddresses.v6.isEmpty 
             }
             .sorted { $0.name < $1.name }
-        guard !tunnels.isEmpty else { return (nil, nil, false) }
+    }
 
+    static func resolveCandidatePeers(from interfaces: Set<NetInfo>) -> [CandidatePeer] {
+        resolveCandidateTunnels(from: interfaces).flatMap { resolveCandidatePeers(for: $0) }
+    }
+
+    private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) async -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
         // pick all candidate peer ips
-        let candidates = tunnels.flatMap { resolveCandidatePeers(for: $0) }
+        let candidates = Self.resolveCandidatePeers(from: interfaces)
         guard !candidates.isEmpty else { return (nil, nil, false) }
 
         // parallelized tcp service port probing on all candidate ips
@@ -219,7 +223,7 @@ actor DeviceConnectionManager {
         return (nil, nil, false)
     }
 
-    private func isValidCandidatePeer(_ ip: String, for tunnel: TunnelNetInfo) -> Bool {
+    private static func isValidCandidatePeer(_ ip: String, for tunnel: TunnelNetInfo) -> Bool {
         guard !ip.isEmpty,
                ip != "0.0.0.0",             // reject catch all  addr (not unicast connectable)
                ip != "default",             // reject default    addr (not unicast connectable)
@@ -235,7 +239,7 @@ actor DeviceConnectionManager {
         return !isSelf
     }
 
-    private func resolveCandidatePeers(for tunnel: TunnelNetInfo) -> [CandidatePeer] {
+    private static func resolveCandidatePeers(for tunnel: TunnelNetInfo) -> [CandidatePeer] {
         var candidates: [CandidatePeer] = []
         var seen = Set<String>()
 

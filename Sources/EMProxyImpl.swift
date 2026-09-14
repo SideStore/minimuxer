@@ -242,41 +242,7 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
 
     private func discoverUtunCandidateDestinations() -> [String] {
         let interfaces = NetworkIfaceScanner.scan(quiet: true)
-        var candidates = [String]()
-        var seen = Set<String>()
-
-        for info in interfaces {
-            guard info.name.lowercased().hasPrefix("utun"),
-                  let tunnel = info as? TunnelNetInfo else { continue }
-
-            if let linkLayerDst = tunnel.linkLayerDestinationIP?.v4?.host,
-               !linkLayerDst.isEmpty,
-               !seen.contains(linkLayerDst) {
-                seen.insert(linkLayerDst)
-                candidates.append(linkLayerDst)
-            }
-
-            for route in tunnel.destinationRoutes {
-                if let destIp = route.destinationIPv4,
-                   !destIp.isEmpty,
-                   destIp != "0.0.0.0",
-                   destIp != "255.255.255.255",
-                   !destIp.hasPrefix("224."),
-                   !seen.contains(destIp) {
-                    seen.insert(destIp)
-                    candidates.append(destIp)
-                }
-            }
-
-            for ip in tunnel.interfaceAddresses.v4 {
-                let host = ip.host
-                if !host.isEmpty && !seen.contains(host) {
-                    seen.insert(host)
-                    candidates.append(host)
-                }
-            }
-        }
-        return candidates
+        return DeviceConnectionManager.resolveCandidatePeers(from: interfaces).map(\.ip)
     }
 
     private func isProbeSuccessful(for state: NWConnection.State) -> Bool? {
