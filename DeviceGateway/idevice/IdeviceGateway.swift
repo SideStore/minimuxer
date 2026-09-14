@@ -1012,7 +1012,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         }
     }
 
-    private func getAppPaths(appId: String) throws -> (container: String, bundlePath: String) {
+    private func getAppPaths(appId: String) throws -> (container: String, bundlePath: String, executableName: String?) {
         debugLog("[IdeviceGateway] getAppPaths() called, appId: \(appId)")
         return try performWithEitherService(
             connectRP: installation_proxy_connect_rsd,
@@ -1044,6 +1044,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
             let plistArray = resultPtr.assumingMemoryBound(to: plist_t?.self)
             var container = ""
             var bundlePath = ""
+            var executableName: String? = nil
             
             for i in 0..<outLen {
                 if let plistVal = plistArray[i] {
@@ -1064,6 +1065,15 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                             verboseLog("[IdeviceGateway] getAppPaths() found Path: \(bundlePath)")
                         }
                     }
+
+                    // CFBundleExecutable
+                    let execPlist = plist_dict_get_item(plistVal, "CFBundleExecutable")
+                    if let execPlist = execPlist {
+                        if let ptr = getRustPlistString(execPlist) {
+                            executableName = ptr
+                            verboseLog("[IdeviceGateway] getAppPaths() found CFBundleExecutable: \(executableName ?? "")")
+                        }
+                    }
                 }
             }
             free(outResult)
@@ -1072,13 +1082,14 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                 debugLog("[IdeviceGateway] getAppPaths() container or bundlePath is empty")
                 throw IdeviceGatewayError(.serviceError, reason: "Failed to resolve app paths")
             }
-            return (container, bundlePath)
+            return (container, bundlePath, executableName)
         }
     }
     
-    private func sendDebugProxyCommand(client: OpaquePointer, name: String, args: [String]) throws {
+    @discardableResult
+    private func sendDebugProxyCommand(client: OpaquePointer, name: String, args: [String]) throws -> String? {
         debugLog("[IdeviceGateway] sendDebugProxyCommand() called, name: \(name), args: \(args)")
-        try name.withCString { namePtr in
+        return try name.withCString { namePtr in
             var argPtrs = args.map { UnsafePointer<Int8>(strdup($0)) }
             defer {
                 for ptr in argPtrs {
@@ -1102,8 +1113,10 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                     let respStr = String(cString: response)
                     verboseLog("[IdeviceGateway] sendDebugProxyCommand() got response: \(respStr)")
                     free(response)
+                    return respStr
                 } else {
                     debugLog("[IdeviceGateway] sendDebugProxyCommand() got empty response")
+                    return nil
                 }
             } else {
                 debugLog("[IdeviceGateway] sendDebugProxyCommand() failed to construct command \(name)")
@@ -1114,7 +1127,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
     
     private func launchAppPre17(appId: String) throws {
         debugLog("[IdeviceGateway] launchAppPre17() called for appId: \(appId)")
-        let (container, bundlePath) = try getAppPaths(appId: appId)
+        let (container, bundlePath, _) = try getAppPaths(appId: appId)
         
         try performWithEitherService(
             connectRP: lockdownd_connect_rsd,
@@ -1298,6 +1311,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         if major < 17 {
             try launchAppPre17(appId: appId)
         } else {
+            let (_, bundlePath, executableName) = (try? getAppPaths(appId: appId)) ?? ("", "", nil)
             try performWithEitherService(
                 connectRP: debug_proxy_connect_rsd,
                 connectLockdown: { [weak self] _, _ in
@@ -1307,7 +1321,27 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                 cleanup: debug_proxy_free,
                 serviceName: "debug proxy"
             ) { client in
-                debugLog("[IdeviceGateway] debugApp() connection validation succeeded")
+                guard let pid = try self.findProcessPID(
+                    appId: appId,
+                    bundlePath: bundlePath.isEmpty ? nil : bundlePath,
+                    executableName: executableName,
+                    sendCommand: { name, args in
+                        try self.sendDebugProxyCommand(client: client, name: name, args: args)
+                    }
+                ) else {
+                    throw IdeviceGatewayError(
+                        .serviceError,
+                        reason: "App is not running. Please open the app and keep it in the background, then enable JIT."
+                    )
+                }
+                if pid > 0 {
+                    debugLog("[IdeviceGateway] Attaching to PID \(pid) for JIT...")
+                    let commands = [("vAttach;\(String(format: "%x", pid))", [String]()), ("D", [String]())]
+                    for (name, args) in commands {
+                        try self.sendDebugProxyCommand(client: client, name: name, args: args)
+                    }
+                }
+                debugLog("[IdeviceGateway] debugApp() successfully attached and detached for \(executableName ?? appId) (PID: \(pid))")
             }
         }
     }
@@ -1324,9 +1358,9 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
             cleanup: debug_proxy_free,
             serviceName: "debug proxy"
         ) { client in
-            let commands = [("vAttach", [String(format: "%02X", pid)]), ("D", [])]
+            let commands = [("vAttach;\(String(format: "%x", pid))", [String]()), ("D", [String]())]
             for (name, args) in commands {
-                try sendDebugProxyCommand(client: client, name: name, args: args)
+                try self.sendDebugProxyCommand(client: client, name: name, args: args)
             }
         }
     }

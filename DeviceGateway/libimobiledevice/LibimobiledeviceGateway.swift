@@ -1141,6 +1141,40 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
         }
     }
 
+    @discardableResult
+    private func sendDebugserverCommand(client: debugserver_client_t, name: String, args: [String]) throws -> String? {
+        debugLog("[LibimobiledeviceGateway] sendDebugserverCommand() called, name: \(name), args: \(args)")
+        var command: debugserver_command_t? = nil
+        var argPtrs: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
+        defer {
+            for ptr in argPtrs {
+                if let ptr = ptr { free(ptr) }
+            }
+        }
+
+        let newErr = name.withCString { namePtr in
+            argPtrs.withUnsafeMutableBufferPointer { buf in
+                debugserver_command_new(namePtr, Int32(args.count), buf.baseAddress, &command)
+            }
+        }
+        guard newErr == DEBUGSERVER_E_SUCCESS, let cmd = command else {
+            throw LibimobiledeviceGatewayError(.serviceError, reason: "debugserver_command_new failed with code \(newErr.rawValue)")
+        }
+        defer { debugserver_command_free(cmd) }
+
+        var response: UnsafeMutablePointer<CChar>? = nil
+        let sendErr = debugserver_client_send_command(client, cmd, &response, nil)
+        guard sendErr == DEBUGSERVER_E_SUCCESS else {
+            throw LibimobiledeviceGatewayError(.serviceError, reason: "debugserver_client_send_command failed with code \(sendErr.rawValue)")
+        }
+        if let response = response {
+            let respStr = String(cString: response)
+            free(response)
+            return respStr
+        }
+        return nil
+    }
+
     func syncDebugApp(appId: String) throws {
         if pairingFileType == .rppairing {
             try withRSDService(.debugserver) { stream in
@@ -1154,7 +1188,25 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
             create: debugserver_client_new,
             cleanup: debugserver_client_free
         ) { ds in
-            debugLog("[LibimobiledeviceGateway] debugApp connected to debugserver for \(appId)")
+            guard let pid = try self.findProcessPID(
+                appId: appId,
+                sendCommand: { name, args in
+                    try self.sendDebugserverCommand(client: ds, name: name, args: args)
+                }
+            ) else {
+                throw LibimobiledeviceGatewayError(
+                    .serviceError,
+                    reason: "App is not running. Please open the app and keep it in the background, then enable JIT."
+                )
+            }
+            if pid > 0 {
+                debugLog("[LibimobiledeviceGateway] Attaching to PID \(pid) for JIT...")
+                let commands = [("vAttach;\(String(format: "%x", pid))", [String]()), ("D", [String]())]
+                for (name, args) in commands {
+                    try self.sendDebugserverCommand(client: ds, name: name, args: args)
+                }
+            }
+            debugLog("[LibimobiledeviceGateway] debugApp successfully attached and detached for \(appId) (PID: \(pid))")
         }
     }
 
@@ -1171,7 +1223,10 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
             create: debugserver_client_new,
             cleanup: debugserver_client_free
         ) { ds in
-            debugLog("[LibimobiledeviceGateway] debugProcess connected to debugserver for PID \(pid)")
+            let commands = [("vAttach;\(String(format: "%x", pid))", [String]()), ("D", [String]())]
+            for (name, args) in commands {
+                try self.sendDebugserverCommand(client: ds, name: name, args: args)
+            }
         }
     }
 
