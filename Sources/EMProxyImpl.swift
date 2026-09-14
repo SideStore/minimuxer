@@ -60,21 +60,12 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
         let port: UInt16
         let enabled: Bool
     }
-    
-    private actor State {
-        var handshakeConfig: HandshakeConfig?
-        
-        func with<T>(_ body: (isolated State) throws -> T) rethrows -> T {
-            try body(self)
-        }
-    }
-    private let state = State()
+    private var handshakeConfig: HandshakeConfig?
+    private let handshakeLock = NSLock()
 
     public func setHandshakeClient(host: String, port: UInt16, enabled: Bool) {
-        Task.detached {
-            await self.state.with {
-                $0.handshakeConfig = HandshakeConfig(host: host, port: port, enabled: enabled)
-            }
+        handshakeLock.withLock {
+            self.handshakeConfig = HandshakeConfig(host: host, port: port, enabled: enabled)
         }
     }
 
@@ -94,7 +85,7 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
 
 
     public func start(host: String, port: UInt16) async throws {
-        let config = await state.with { $0.handshakeConfig }
+        let config = handshakeLock.withLock { self.handshakeConfig }
         guard let config = config else {
             throw EMProxyError.handshakeClientNotConfigured
         }
