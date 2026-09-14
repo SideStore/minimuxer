@@ -67,8 +67,8 @@ open class BaseDeviceGateway: @unchecked Sendable {
     }
 
     public func setPort(_ port: UInt16, for protocol: PairingProtocol) {
-        debugLog("[\(logTag)] setPort(\(port), for: .\(`protocol`)) called")
         guard protocolPorts[`protocol`] != port else { return }
+        debugLog("[\(logTag)] setPort(\(port), for: .\(`protocol`)) called")
         protocolPorts[`protocol`] = port
         invalidateConnection()
     }
