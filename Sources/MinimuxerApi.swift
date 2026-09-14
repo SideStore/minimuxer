@@ -169,6 +169,14 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
         let resolvedPort = remotePairingPort ?? currentRemotePairingPort
         let resolvedTimeout = deviceProbeTimeout ?? currentDeviceProbeTimeout
 
+        if let cached = cachedInstance,
+           currentBackend == resolvedBackend,
+           currentRemotePairingPort == resolvedPort,
+           currentDeviceProbeTimeout == resolvedTimeout 
+        {
+            return cached
+        }
+
         if let cached = cachedInstance, currentBackend == resolvedBackend {
             currentRemotePairingPort = resolvedPort
             currentDeviceProbeTimeout = resolvedTimeout
