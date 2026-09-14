@@ -94,6 +94,56 @@ open class BaseDeviceGateway: @unchecked Sendable {
 }
 
 
+public struct RSPStopReply: Codable, Sendable {
+    public let rawPacket: String
+    public let signal: UInt8?
+    public let threadId: String?
+    public let registers: [String: String]
+    public let metadata: [String: String]
+
+    public init?(rawPacket: String) {
+        guard rawPacket.hasPrefix("T") else { return nil }
+        self.rawPacket = rawPacket
+
+        let hexSig = rawPacket.dropFirst().prefix(2)
+        self.signal = UInt8(hexSig, radix: 16)
+
+        var parsedThreadId: String?
+        var parsedRegs: [String: String] = [:]
+        var parsedMeta: [String: String] = [:]
+
+        let body = rawPacket.dropFirst(1 + hexSig.count)
+        let pairs = body.split(separator: ";")
+        for pair in pairs {
+            let parts = pair.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = String(parts[0])
+            let val = String(parts[1])
+
+            if key == "thread" {
+                parsedThreadId = val
+            } else if key.allSatisfy({ $0.isHexDigit }) || ["pc", "sp", "fp", "lr", "cpsr"].contains(key) {
+                parsedRegs[key] = val
+            } else {
+                parsedMeta[key] = val
+            }
+        }
+
+        self.threadId = parsedThreadId
+        self.registers = parsedRegs
+        self.metadata = parsedMeta
+    }
+
+    public var jsonPrettyPrinted: String? {
+        guard let data = try? JSONEncoder().encode(self),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) else {
+            return nil
+        }
+        return String(data: prettyData, encoding: .utf8)
+    }
+}
+
 public struct RSPProcessInfo: Sendable, Equatable, Hashable {
     public let pid: UInt32
     public let name: String
@@ -232,6 +282,9 @@ extension BaseDeviceGateway {
             }
 
             debugLog("[\(logTag)] findProcessPID() direct attach succeeded: '\(attachResp)'")
+            if let stopReply = RSPStopReply(rawPacket: attachResp), let json = stopReply.jsonPrettyPrinted {
+                debugLog("[\(logTag)] direct attach stop reply JSON:\n\(json)")
+            }
             _ = try? sendCommand("D", [])
             return 0
         }
