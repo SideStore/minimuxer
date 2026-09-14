@@ -60,12 +60,21 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
         let port: UInt16
         let enabled: Bool
     }
-    private var handshakeConfig: HandshakeConfig?
-    private let handshakeLock = NSLock()
+    
+    private actor State {
+        var handshakeConfig: HandshakeConfig?
+        
+        func with<T>(_ body: (isolated State) throws -> T) rethrows -> T {
+            try body(self)
+        }
+    }
+    private let state = State()
 
     public func setHandshakeClient(host: String, port: UInt16, enabled: Bool) {
-        handshakeLock.withLock {
-            self.handshakeConfig = HandshakeConfig(host: host, port: port, enabled: enabled)
+        Task.detached {
+            await self.state.with {
+                $0.handshakeConfig = HandshakeConfig(host: host, port: port, enabled: enabled)
+            }
         }
     }
 
@@ -85,7 +94,7 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
 
 
     public func start(host: String, port: UInt16) async throws {
-        let config = handshakeLock.withLock { self.handshakeConfig }
+        let config = await state.with { $0.handshakeConfig }
         guard let config = config else {
             throw EMProxyError.handshakeClientNotConfigured
         }
@@ -110,8 +119,10 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
                 }
             }
         }
-        if config.enabled {
+        if config.enabled && !config.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             await triggerVPNHandshake(host: config.host, port: config.port)
+        } else {
+            await probeVPNHandshake(port: config.port != 0 ? config.port : MinimuxerConstants.lockdowndPort)
         }
     }
 
@@ -145,46 +156,127 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
         let startTime = Date()
         
         while Date().timeIntervalSince(startTime) < timeout {
-            let connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
-            
-            let success = await withCheckedContinuation { continuation in
-                var resolved = false
-                let lock = NSLock()
-                
-                let resolve = { (result: Bool) in
-                    lock.withLock {
-                        if !resolved {
-                            resolved = true
-                            continuation.resume(returning: result)
-                        }
-                    }
-                }
-                
-                connection.stateUpdateHandler = { state in
-                    debugLog("[EMProxy] triggerVPNHandshake state: \(state)")
-                    if let result = self.isProbeSuccessful(for: state) {
-                        resolve(result)
-                    }
-                }
-                connection.start(queue: .global())
-                
-                // Limit this probe attempt to 1 second
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    resolve(false)
-                    connection.cancel()
-                }
-            }
-            
-            connection.cancel()
-            
+            let success = await probeHost(host, port: port)
             if success {
                 return // Tunnel is ready!
             }
-            
-            // Wait 200ms before starting the next probe
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
+    }
+
+    private func probeVPNHandshake(port: UInt16) async {
+        let candidates = discoverUtunCandidateDestinations()
+        guard !candidates.isEmpty else {
+            debugLog("[EMProxy] probeVPNHandshake skipped: no utun interface candidates found")
+            return
+        }
+
+        debugLog("[EMProxy] probeVPNHandshake starting for candidates: \(candidates), port: \(port)")
+        let timeout = Double(MinimuxerConstants.vpnHandshakeTimeoutNs) / 1_000_000_000.0
+        let startTime = Date()
+
+        while Date().timeIntervalSince(startTime) < timeout {
+            let success = await withTaskGroup(of: Bool.self) { group in
+                for host in candidates {
+                    group.addTask {
+                        await self.probeHost(host, port: port)
+                    }
+                }
+
+                for await result in group {
+                    if result {
+                        group.cancelAll()
+                        return true
+                    }
+                }
+                return false
+            }
+
+            if success {
+                debugLog("[EMProxy] probeVPNHandshake succeeded!")
+                return
+            }
+
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        debugLog("[EMProxy] probeVPNHandshake timed out after \(timeout)s")
+    }
+
+    private func probeHost(_ host: String, port: UInt16) async -> Bool {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { return false }
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
+
+        let states = AsyncStream<NWConnection.State> { continuation in
+            connection.stateUpdateHandler = { state in
+                continuation.yield(state)
+            }
+            continuation.onTermination = { @Sendable _ in
+                connection.cancel()
+            }
+            connection.start(queue: .global())
+        }
+
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await state in states {
+                    debugLog("[EMProxy] probeHost(\(host):\(port)) state: \(state)")
+                    if let result = self.isProbeSuccessful(for: state) {
+                        connection.cancel()
+                        return result
+                    }
+                }
+                return false
+            }
+
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                connection.cancel()
+                return false
+            }
+
+            let firstResult = await group.next() ?? false
+            group.cancelAll()
+            return firstResult
+        }
+    }
+
+    private func discoverUtunCandidateDestinations() -> [String] {
+        let interfaces = NetworkIfaceScanner.scan(quiet: true)
+        var candidates = [String]()
+        var seen = Set<String>()
+
+        for info in interfaces {
+            guard info.name.lowercased().hasPrefix("utun"),
+                  let tunnel = info as? TunnelNetInfo else { continue }
+
+            if let linkLayerDst = tunnel.linkLayerDestinationIP?.v4?.host,
+               !linkLayerDst.isEmpty,
+               !seen.contains(linkLayerDst) {
+                seen.insert(linkLayerDst)
+                candidates.append(linkLayerDst)
+            }
+
+            for route in tunnel.destinationRoutes {
+                if let destIp = route.destinationIPv4,
+                   !destIp.isEmpty,
+                   destIp != "0.0.0.0",
+                   destIp != "255.255.255.255",
+                   !destIp.hasPrefix("224."),
+                   !seen.contains(destIp) {
+                    seen.insert(destIp)
+                    candidates.append(destIp)
+                }
+            }
+
+            for ip in tunnel.interfaceAddresses.v4 {
+                let host = ip.host
+                if !host.isEmpty && !seen.contains(host) {
+                    seen.insert(host)
+                    candidates.append(host)
+                }
+            }
+        }
+        return candidates
     }
 
     private func isProbeSuccessful(for state: NWConnection.State) -> Bool? {
