@@ -1978,6 +1978,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         verboseLog("[IdeviceGateway] startWirelessPair() client connected on fd: \(clientFd), starting handshake via pairable_host_accept_fd...")
 
         var pairedRpf: OpaquePointer? = nil
+        var peerDevicePtr: UnsafeMutablePointer<RpPairingPeerDeviceC>? = nil
 
         class PinContext {
             let callback: (String) -> Void
@@ -2000,7 +2001,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                 ctxObj.callback(pinStr)
             },
             pinContextPtr,
-            nil,
+            &peerDevicePtr,
             &pairedRpf
         )
 
@@ -2016,12 +2017,42 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         }
         defer { rp_pairing_file_free(pairedRpf) }
 
+        var peerName = hostName
+        var peerModel = hostModel
+        var peerUdid: String? = nil
+
+        if let peer = peerDevicePtr {
+            defer { rppairing_peer_device_free(peer) }
+            let p = peer.pointee
+            if let namePtr = p.name, let str = String(validatingUTF8: namePtr), !str.isEmpty {
+                peerName = str
+            }
+            if let modelPtr = p.model, let str = String(validatingUTF8: modelPtr), !str.isEmpty {
+                peerModel = str
+            }
+            if let udidPtr = p.udid, let str = String(validatingUTF8: udidPtr), !str.isEmpty {
+                peerUdid = str
+            }
+        }
+
+        let outDir = (outPath as NSString).deletingLastPathComponent
+        let spaceReplaced = "\(peerName)_\(peerModel)"
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+        let sanitized = spaceReplaced.unicodeScalars.filter { allowed.contains($0) }.map(String.init).joined()
+        let finalFileName = sanitized.isEmpty ? MinimuxerConstants.defaultRPPairingFileName : "\(sanitized)\(MinimuxerConstants.rpPairingFileSuffix)"
+        let finalOutPath = outDir.isEmpty ? finalFileName : (outDir as NSString).appendingPathComponent(finalFileName)
+
+        verboseLog("[IdeviceGateway] startWirelessPair() saving paired device to: \(finalOutPath) (name: '\(peerName)', model: '\(peerModel)')")
+
         return try finalizeAndSavePairedDevice(
             rpf: pairedRpf,
-            hostName: hostName,
-            hostModel: hostModel,
-            outPath: outPath,
-            fallbackUdid: identifier,
+            hostName: peerName,
+            hostModel: peerModel,
+            outPath: finalOutPath,
+            fallbackUdid: peerUdid ?? identifier,
             initialAltIrk: hostAltIrk
         )
     }
