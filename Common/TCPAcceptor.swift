@@ -13,41 +13,44 @@ public final class TCPAcceptor {
     public let port: UInt16
 
     public init(port: UInt16 = 0) throws {
-        serverFd = socket(AF_INET, SOCK_STREAM, 0)
-        guard serverFd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
 
         var yes: Int32 = 1
-        setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
         #if os(iOS) || os(macOS) || os(tvOS) || os(watchOS)
-        setsockopt(serverFd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
         #endif
 
         var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        let addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        addr.sin_len = UInt8(addrLen)
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = INADDR_ANY
 
-        let bound = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(serverFd, $0, socklen_t(addr.sin_len)) == 0
+        let bound = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                bind(fd, sockPtr, addrLen) == 0
             }
         }
-        guard bound, listen(serverFd, 5) == 0 else {
-            close(serverFd)
+        guard bound, listen(fd, 5) == 0 else {
+            close(fd)
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
-        var len = socklen_t(addr.sin_len)
-        let named = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(serverFd, $0, &len) == 0
+        var len = addrLen
+        let named = withUnsafeMutablePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                getsockname(fd, sockPtr, &len) == 0
             }
         }
         guard named else {
-            close(serverFd)
+            close(fd)
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
+
+        self.serverFd = fd
         self.port = UInt16(bigEndian: addr.sin_port)
     }
 
