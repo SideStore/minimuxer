@@ -1854,42 +1854,6 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         return (rpf, identifier)
     }
 
-    private func findFreePort() -> UInt16 {
-        var actualPort: UInt16 = 0
-        verboseLog("[IdeviceGateway] findFreePort() finding free port")
-        let socketFd = socket(AF_INET, SOCK_STREAM, 0)
-        if socketFd >= 0 {
-            var addr = sockaddr_in()
-            addr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
-            addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = 0
-            addr.sin_addr.s_addr = INADDR_ANY
-            let bindRes = withUnsafePointer(to: &addr) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    bind(socketFd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                }
-            }
-            if bindRes == 0 {
-                var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-                let nameRes = withUnsafeMutablePointer(to: &addr) {
-                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        getsockname(socketFd, $0, &len)
-                    }
-                }
-                if nameRes == 0 {
-                    actualPort = UInt16(bigEndian: addr.sin_port)
-                    verboseLog("[IdeviceGateway] findFreePort() bound to port: \(actualPort)")
-                }
-            }
-            close(socketFd)
-        }
-
-        if actualPort == 0 {
-            actualPort = 5555 // fallback
-            verboseLog("[IdeviceGateway] findFreePort() fallback to port: \(actualPort)")
-        }
-        return actualPort
-    }
 
     private func finalizeAndSavePairedDevice(
         rpf: OpaquePointer,
@@ -1960,23 +1924,60 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         onPin: @escaping (String) -> Void
     ) throws -> PairedDeviceRecord {
         debugLog("[IdeviceGateway] startWirelessPair() called, hostName: \(hostName), hostModel: \(hostModel), outPath: \(outPath)")
-        
-        let (rpf, identifier) = try generatePairingFile(hostName: hostName)
-        defer { rp_pairing_file_free(rpf) }
 
-        let actualPort = findFreePort()
+        var handle: OpaquePointer? = nil
+        var serviceIdC: UnsafeMutablePointer<CChar>? = nil
+        var txtData: UnsafeMutablePointer<UInt8>? = nil
+        var txtLen: UInt = 0
+        var hostAltIrk = [UInt8](repeating: 0, count: 16)
 
-        let txtRecords = [
-            "txtvers": "1",
-            "id": identifier,
-            "model": hostModel,
-            "name": hostName
-        ]
-        verboseLog("[IdeviceGateway] startWirelessPair() invoking onReady")
-        onReady(identifier, actualPort, txtRecords)
+        verboseLog("[IdeviceGateway] startWirelessPair() calling pairable_host_prepare...")
+        let prepareErr = pairable_host_prepare(
+            hostName,
+            hostModel,
+            false,
+            &handle,
+            &serviceIdC,
+            &txtData,
+            &txtLen,
+            &hostAltIrk
+        )
+
+        if let prepareErr = prepareErr {
+            debugLog("[IdeviceGateway] startWirelessPair() pairable_host_prepare failed")
+            defer { idevice_error_free(prepareErr) }
+            throw IdeviceGatewayError(.serviceError, reason: "pairable_host_prepare failed")
+        }
+
+        guard let handle = handle, let serviceIdC = serviceIdC else {
+            debugLog("[IdeviceGateway] startWirelessPair() handle or serviceId is nil")
+            throw IdeviceGatewayError(.serviceError, reason: "Invalid pairable host handle")
+        }
+        defer { pairable_host_free(handle) }
+
+        let identifier = String(cString: serviceIdC)
+        idevice_string_free(serviceIdC)
+
+        var txtRecords: [String: String] = [:]
+        if let txtData = txtData, txtLen > 0 {
+            let data = Data(bytes: txtData, count: Int(txtLen))
+            idevice_data_free(txtData, txtLen)
+            if let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: String] {
+                txtRecords = plist
+            }
+        }
+
+        let acceptor = try TCPAcceptor()
+        verboseLog("[IdeviceGateway] startWirelessPair() bound listening socket on port \(acceptor.port), invoking onReady")
+        onReady(identifier, acceptor.port, txtRecords)
+
+        verboseLog("[IdeviceGateway] startWirelessPair() waiting for incoming connection via accept()...")
+        let clientFd = try acceptor.accept()
+        defer { close(clientFd) }
+
+        verboseLog("[IdeviceGateway] startWirelessPair() client connected on fd: \(clientFd), starting handshake via pairable_host_accept_fd...")
 
         var pairedRpf: OpaquePointer? = nil
-        var hostAltIrk = [UInt8](repeating: 0, count: 16)
 
         class PinContext {
             let callback: (String) -> Void
@@ -1988,11 +1989,9 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         let pinContextPtr = Unmanaged.passRetained(pinContextObj).toOpaque()
         defer { Unmanaged<PinContext>.fromOpaque(pinContextPtr).release() }
 
-        verboseLog("[IdeviceGateway] startWirelessPair() waiting for connection via pairable_host_accept...")
-        let acceptErr = pairable_host_accept(
-            hostName,
-            hostModel,
-            actualPort,
+        let acceptErr = pairable_host_accept_fd(
+            handle,
+            clientFd,
             { pin, context in
                 guard let pin = pin, let context = context else { return }
                 let ctxObj = Unmanaged<PinContext>.fromOpaque(context).takeUnretainedValue()
@@ -2001,12 +2000,12 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                 ctxObj.callback(pinStr)
             },
             pinContextPtr,
-            &hostAltIrk,
+            nil,
             &pairedRpf
         )
 
         if let acceptErr = acceptErr {
-            debugLog("[IdeviceGateway] startWirelessPair() pairable_host_accept failed")
+            debugLog("[IdeviceGateway] startWirelessPair() pairable_host_accept_fd failed")
             defer { idevice_error_free(acceptErr) }
             throw IdeviceGatewayError(.serviceError, reason: "Pairing failed or cancelled")
         }
