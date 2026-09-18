@@ -26,6 +26,16 @@ public enum DeviceConnectionMode: String, Codable, Sendable {
     case notConfigured
 }
 
+public struct ServicePort: Equatable, Hashable, Sendable {
+    public let protocolType: PairingProtocol
+    public let port: UInt16
+
+    public init(protocolType: PairingProtocol, port: UInt16) {
+        self.protocolType = protocolType
+        self.port = port
+    }
+}
+
 public struct ConnectionConfigBinding: Sendable {
     public let setTunnelIfaceIp: @Sendable (String?) -> Void
     public let setTunnelPeerIp: @Sendable (String?) -> Void
@@ -38,6 +48,7 @@ public struct ConnectionConfigBinding: Sendable {
     public let getConnectionMode: @Sendable () -> DeviceConnectionMode
     public let getOverrideTunnelPeerIp: @Sendable () -> String
     public let getRemoteServerIp: @Sendable () -> String
+    public let resolveServicePort: (@Sendable (ServicePort) async -> ServicePort)?
 
     public init(
         setTunnelIfaceIp: @escaping @Sendable (String?) -> Void,
@@ -49,7 +60,10 @@ public struct ConnectionConfigBinding: Sendable {
         setRemoteReachable: @escaping @Sendable (Bool) -> Void,
         getOverrideTunnelPeerIp: @escaping @Sendable () -> String,
         setOverrideTunnelPeerReachable: @escaping @Sendable (Bool) -> Void,
-        getConnectionMode: @escaping @Sendable () -> DeviceConnectionMode
+        getConnectionMode: @escaping @Sendable () -> DeviceConnectionMode,
+        resolveServicePort: (@escaping @Sendable (ServicePort) async -> ServicePort)? = { servicePort in
+            ServicePort(protocolType: servicePort.protocolType, port: servicePort.protocolType.defaultPort)
+        }
     ) {
         self.setTunnelIfaceIp = setTunnelIfaceIp
         self.setTunnelPeerIp = setTunnelPeerIp
@@ -61,6 +75,7 @@ public struct ConnectionConfigBinding: Sendable {
         self.getOverrideTunnelPeerIp = getOverrideTunnelPeerIp
         self.setOverrideTunnelPeerReachable = setOverrideTunnelPeerReachable
         self.getConnectionMode = getConnectionMode
+        self.resolveServicePort = resolveServicePort
     }
 }
 

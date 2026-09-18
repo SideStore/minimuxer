@@ -60,14 +60,29 @@ actor DeviceConnectionManager {
         connectionConfigCache?.getConnectionMode() ?? .notConfigured
     }
 
-    nonisolated private func tcpProbe(_ ip: String?) -> Bool {
+    private func tcpProbe(_ ip: String?) async -> Bool {
         guard let ip, !ip.isEmpty else {
             debugLog("[minimuxer] [iface] tcpProbe skipped — IP is nil or empty")
             return false
         }
-        let port = gateway.servicePort
-        let reachable = NetworkUtils.testTCP(ip: ip, port: port, timeoutMs: deviceProbeTimeout)
-        debugLog("[minimuxer] [iface] tcpProbe \(ip):\(port) (protocol: .\(gateway.pairingFileType)) -> \(reachable ? "reachable" : "unreachable")")
+        let currentProtocol = gateway.pairingFileType
+        let currentPort = gateway.servicePort
+        var reachable = NetworkUtils.testTCP(ip: ip, port: currentPort, timeoutMs: deviceProbeTimeout)
+
+        if !reachable, let resolver = connectionConfigCache?.resolveServicePort {
+            let current = ServicePort(protocolType: currentProtocol, port: currentPort)
+            let resolved = await resolver(current)
+
+            if resolved.port != currentPort {
+                // retry probe after resolving new target port
+                let newPortReachable = NetworkUtils.testTCP(ip: ip, port: resolved.port, timeoutMs: deviceProbeTimeout)
+                if newPortReachable {
+                    gateway.setPort(resolved.port, for: currentProtocol)
+                    reachable = true
+                }
+            }
+        }
+        debugLog("[minimuxer] [iface] tcpProbe \(ip):\(gateway.servicePort) (protocol: .\(gateway.pairingFileType)) -> \(reachable ? "reachable" : "unreachable")")
         return reachable
     }
 
@@ -103,7 +118,7 @@ actor DeviceConnectionManager {
 
                 let rawOverrideIp = connectionConfigCache?.getOverrideTunnelPeerIp()
                 overridePeerIp = (rawOverrideIp?.isEmpty ?? true) ? nil : rawOverrideIp
-                isOverridePeerIpReachable = tcpProbe(overridePeerIp)
+                isOverridePeerIpReachable = await tcpProbe(overridePeerIp)
             
                 let isOverrideIpUnchanged = lastOverrideIp == overridePeerIp
                 let isDerivedIpUnchanged = lastDerivedPeer == derivedPeerIp && lastDerivedPeerMask == derivedPeerSubnetMask
@@ -149,7 +164,7 @@ actor DeviceConnectionManager {
             case .remoteServer:
                 let rawServerIp = connectionConfigCache?.getRemoteServerIp()
                 let serverIp = (rawServerIp?.isEmpty ?? true) ? nil : rawServerIp
-                let reachable = tcpProbe(serverIp)
+                let reachable = await tcpProbe(serverIp)
                 if self.lastConnectionMode == connectionMode && serverIp == remoteServerIp && reachable == isRemoteServerIpReachable {
                     debugLog("[minimuxer] [iface] no remote server state changes detected, skipping refresh")
                     return false
@@ -207,7 +222,7 @@ actor DeviceConnectionManager {
         // parallelized tcp service port probing on all candidate ips
         let resolved = await withTaskGroup(of: CandidatePeer?.self, returning: CandidatePeer?.self) { group in
             for candidate in candidates {
-                group.addTask { self.tcpProbe(candidate.ip) ? candidate : nil }
+                group.addTask { await self.tcpProbe(candidate.ip) ? candidate : nil }
             }
             for await case let candidate? in group {
                 group.cancelAll()
