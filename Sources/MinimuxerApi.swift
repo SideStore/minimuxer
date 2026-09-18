@@ -61,7 +61,7 @@ public struct ConnectionConfigBinding: Sendable {
         getOverrideTunnelPeerIp: @escaping @Sendable () -> String,
         setOverrideTunnelPeerReachable: @escaping @Sendable (Bool) -> Void,
         getConnectionMode: @escaping @Sendable () -> DeviceConnectionMode,
-        resolveServicePort: (@escaping @Sendable (ServicePort) async -> ServicePort)? = { servicePort in
+        resolveServicePort: (@Sendable (ServicePort) async -> ServicePort)? = { servicePort in
             ServicePort(protocolType: servicePort.protocolType, port: servicePort.protocolType.defaultPort)
         }
     ) {
