@@ -12,11 +12,9 @@ public final class TCPAcceptor {
     private let serverFd: Int32
     public let port: UInt16
 
-    public init() throws {
+    public init(port: UInt16 = 0) throws {
         serverFd = socket(AF_INET, SOCK_STREAM, 0)
-        guard serverFd >= 0 else {
-            throw NSError(domain: "TCPAcceptor", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "socket() failed with errno: \(errno)"])
-        }
+        guard serverFd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
 
         var yes: Int32 = 1
         setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
@@ -25,48 +23,37 @@ public final class TCPAcceptor {
         #endif
 
         var addr = sockaddr_in()
-        addr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = 0
+        addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = INADDR_ANY
 
-        let bindRes = withUnsafePointer(to: &addr) {
+        let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(serverFd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                bind(serverFd, $0, socklen_t(addr.sin_len)) == 0
             }
         }
-        guard bindRes == 0, listen(serverFd, 5) == 0 else {
-            let err = errno
+        guard bound, listen(serverFd, 5) == 0 else {
             close(serverFd)
-            throw NSError(domain: "TCPAcceptor", code: Int(err), userInfo: [NSLocalizedDescriptionKey: "bind/listen failed with errno: \(err)"])
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
-        var assigned = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameRes = withUnsafeMutablePointer(to: &assigned) {
+        var len = socklen_t(addr.sin_len)
+        let named = withUnsafeMutablePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(serverFd, $0, &len)
+                getsockname(serverFd, $0, &len) == 0
             }
         }
-        guard nameRes == 0 else {
-            let err = errno
+        guard named else {
             close(serverFd)
-            throw NSError(domain: "TCPAcceptor", code: Int(err), userInfo: [NSLocalizedDescriptionKey: "getsockname failed with errno: \(err)"])
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        self.port = UInt16(bigEndian: assigned.sin_port)
+        self.port = UInt16(bigEndian: addr.sin_port)
     }
 
     public func accept() throws -> Int32 {
-        var clientAddr = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let fd = withUnsafeMutablePointer(to: &clientAddr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.accept(serverFd, $0, &len)
-            }
-        }
-        guard fd >= 0 else {
-            throw NSError(domain: "TCPAcceptor", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "accept() failed with errno: \(errno)"])
-        }
+        let fd = Darwin.accept(serverFd, nil, nil)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         return fd
     }
 
