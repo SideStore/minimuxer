@@ -58,18 +58,18 @@ open class BaseDeviceGateway: @unchecked Sendable {
         pairingFileType
     }
 
-    public func getPort(for protocol: PairingProtocol) -> UInt16 {
-        protocolPorts[`protocol`] ?? `protocol`.defaultPort
+    public func getPort(for protocolType: PairingProtocol) -> UInt16 {
+        protocolPorts[protocolType] ?? protocolType.defaultPort
     }
 
     private var logTag: String {
         String(describing: type(of: self))
     }
 
-    public func setPort(_ port: UInt16, for protocol: PairingProtocol) {
-        guard protocolPorts[`protocol`] != port else { return }
-        debugLog("[\(logTag)] setPort(\(port), for: .\(`protocol`)) called")
-        protocolPorts[`protocol`] = port
+    public func setPort(_ port: UInt16, for protocolType: PairingProtocol) {
+        guard protocolPorts[protocolType] != port else { return }
+        debugLog("[\(logTag)] setPort(\(port), for: .\(protocolType)) called")
+        protocolPorts[protocolType] = port
         invalidateConnection()
     }
 

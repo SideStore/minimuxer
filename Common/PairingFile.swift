@@ -36,7 +36,7 @@ public struct RPPairingFile: PairingFile {
     public init(content: String, plist: [String: any Sendable], data: Data) throws {
         let missing = Self.missingKeys(in: plist)
         guard missing.isEmpty else {
-            throw PairingError.incomplete(protocol: .rppairing, missingKeys: missing)
+            throw PairingError.incomplete(protocolType: .rppairing, missingKeys: missing)
         }
         self.rawContent = content
         self.rawData = data
@@ -79,7 +79,7 @@ public struct LockdownPairingFile: PairingFile {
     public init(content: String, plist: [String: any Sendable], data: Data) throws {
         let missing = Self.missingKeys(in: plist)
         guard missing.isEmpty else {
-            throw PairingError.incomplete(protocol: .lockdown, missingKeys: missing)
+            throw PairingError.incomplete(protocolType: .lockdown, missingKeys: missing)
         }
         self.rawContent = content
         self.rawData = data
