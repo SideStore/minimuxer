@@ -62,6 +62,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)?,
         onReady: @escaping @Sendable (String, UInt16, [String: String]) -> Void,
         onPin: @escaping @Sendable (String) -> Void
     ) async throws -> PairedDeviceRecord
@@ -72,6 +73,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)?,
         onRequestPin: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> Void
     ) async throws -> PairedDeviceRecord
 

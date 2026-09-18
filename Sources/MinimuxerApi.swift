@@ -414,6 +414,7 @@ public protocol WirelessPairAPI: AnyObject {
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)?,
         completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
     )
     
@@ -423,6 +424,7 @@ public protocol WirelessPairAPI: AnyObject {
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)?,
         completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
     )
     
@@ -432,12 +434,32 @@ public protocol WirelessPairAPI: AnyObject {
 public extension WirelessPairAPI {
     func start(
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)? = nil,
         completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
-    ){
+    ) {
         start(
             hostName: MinimuxerConstants.defaultHostName,
             hostModel: MinimuxerConstants.defaultHostModel,
             outPath: outPath,
+            resolveFileName: resolveFileName,
+            completion: completion
+        )
+    }
+
+    func trigger(
+        targetIp: String,
+        targetPort: UInt16,
+        outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)? = nil,
+        completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
+    ) {
+        trigger(
+            targetIp: targetIp,
+            targetPort: targetPort,
+            hostName: MinimuxerConstants.defaultHostName,
+            hostModel: MinimuxerConstants.defaultHostModel,
+            outPath: outPath,
+            resolveFileName: resolveFileName,
             completion: completion
         )
     }

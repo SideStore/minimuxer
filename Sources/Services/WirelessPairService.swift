@@ -35,6 +35,7 @@ final internal class WirelessPairService: WirelessPairAPI {
         hostName: String = MinimuxerConstants.defaultHostName,
         hostModel: String = MinimuxerConstants.defaultHostModel,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)? = nil,
         completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
     ) {
         debugLog("[WirelessPairService] start() invoked (hostName='\(hostName)', hostModel='\(hostModel)', outPath='\(outPath)')")
@@ -56,6 +57,7 @@ final internal class WirelessPairService: WirelessPairAPI {
                     hostName: hostName,
                     hostModel: hostModel,
                     outPath: outPath,
+                    resolveFileName: resolveFileName,
                     onReady: { [weak self] serviceID, port, txtRecords in
                         guard let self = self else { return }
                         debugLog("[WirelessPairService] gateway onReady callback (serviceID='\(serviceID)', port=\(port), txtCount=\(txtRecords.count))")
@@ -102,6 +104,7 @@ final internal class WirelessPairService: WirelessPairAPI {
         hostName: String = MinimuxerConstants.defaultHostName,
         hostModel: String = MinimuxerConstants.defaultHostModel,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)? = nil,
         completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
     ) {
         let socketKey = "\(targetIp):\(targetPort)"
@@ -127,6 +130,7 @@ final internal class WirelessPairService: WirelessPairAPI {
                     hostName: hostName,
                     hostModel: hostModel,
                     outPath: outPath,
+                    resolveFileName: resolveFileName,
                     onRequestPin: { [weak self] submitPin in
                         guard let self = self else { return }
                         debugLog("[WirelessPairService] gateway trigger onRequestPin callback invoked")

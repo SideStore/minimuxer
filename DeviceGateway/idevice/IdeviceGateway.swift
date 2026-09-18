@@ -1920,6 +1920,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: ((String, String) -> String)?,
         onReady: @escaping (String, UInt16, [String: String]) -> Void,
         onPin: @escaping (String) -> Void
     ) throws -> PairedDeviceRecord {
@@ -2035,16 +2036,12 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
             }
         }
 
-        let outDir = (outPath as NSString).deletingLastPathComponent
-        let spaceReplaced = "\(peerName)_\(peerModel)"
-            .replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
-        let sanitized = spaceReplaced.unicodeScalars.filter { allowed.contains($0) }.map(String.init).joined()
-        let finalFileName = sanitized.isEmpty ? MinimuxerConstants.defaultRPPairingFileName : "\(sanitized)\(MinimuxerConstants.rpPairingFileSuffix)"
-        let finalOutPath = outDir.isEmpty ? finalFileName : (outDir as NSString).appendingPathComponent(finalFileName)
-
+        let finalOutPath = resolveFinalPairingPath(
+            outPath: outPath,
+            peerName: peerName,
+            peerModel: peerModel,
+            resolveFileName: resolveFileName
+        )
         verboseLog("[IdeviceGateway] startWirelessPair() saving paired device to: \(finalOutPath) (name: '\(peerName)', model: '\(peerModel)')")
 
         return try finalizeAndSavePairedDevice(
@@ -2057,12 +2054,46 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         )
     }
 
+    private func resolveFinalPairingPath(
+        outPath: String,
+        peerName: String,
+        peerModel: String,
+        resolveFileName: ((String, String) -> String)?
+    ) -> String {
+        let outDir: String
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: outPath, isDirectory: &isDirectory), isDirectory.boolValue {
+            outDir = outPath
+        } else if (outPath as NSString).pathExtension.isEmpty {
+            outDir = outPath
+        } else {
+            outDir = (outPath as NSString).deletingLastPathComponent
+        }
+
+        let finalFileName: String
+        if let resolveFileName = resolveFileName {
+            finalFileName = resolveFileName(peerName, peerModel)
+        } else if !(outPath as NSString).lastPathComponent.isEmpty && !(outPath as NSString).pathExtension.isEmpty {
+            finalFileName = (outPath as NSString).lastPathComponent
+        } else {
+            let spaceReplaced = "\(peerName)_\(peerModel)"
+                .replacingOccurrences(of: " ", with: "_")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: ":", with: "_")
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+            let sanitized = spaceReplaced.unicodeScalars.filter { allowed.contains($0) }.map(String.init).joined()
+            finalFileName = sanitized.isEmpty ? MinimuxerConstants.defaultRPPairingFileName : "\(sanitized)\(MinimuxerConstants.rpPairingFileSuffix)"
+        }
+        return outDir.isEmpty ? finalFileName : (outDir as NSString).appendingPathComponent(finalFileName)
+    }
+
     private func syncTriggerWirelessPair(
         targetIp: String,
         targetPort: UInt16,
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: ((String, String) -> String)?,
         onRequestPin: @escaping (@escaping (String) -> Void) -> Void
     ) throws -> PairedDeviceRecord {
         debugLog("[IdeviceGateway] triggerWirelessPair() called, targetIp: \(targetIp), targetPort: \(targetPort), hostName: \(hostName), hostModel: \(hostModel), outPath: \(outPath)")
@@ -2147,11 +2178,19 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
             peerAltIrk = withUnsafeBytes(of: p.alt_irk) { Array($0) }
         }
 
+        let finalOutPath = resolveFinalPairingPath(
+            outPath: outPath,
+            peerName: peerName,
+            peerModel: peerModel,
+            resolveFileName: resolveFileName
+        )
+        verboseLog("[IdeviceGateway] triggerWirelessPair() saving paired device to: \(finalOutPath) (name: '\(peerName)', model: '\(peerModel)')")
+
         return try finalizeAndSavePairedDevice(
             rpf: rpf,
             hostName: peerName,
             hostModel: peerModel,
-            outPath: outPath,
+            outPath: finalOutPath,
             fallbackUdid: peerUdid ?? identifier,
             initialAltIrk: peerAltIrk
         )
@@ -2442,6 +2481,7 @@ extension IdeviceGateway {
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)?,
         onReady: @escaping @Sendable (String, UInt16, [String: String]) -> Void,
         onPin: @escaping @Sendable (String) -> Void
     ) async throws -> PairedDeviceRecord {
@@ -2450,6 +2490,7 @@ extension IdeviceGateway {
                 hostName: hostName,
                 hostModel: hostModel,
                 outPath: outPath,
+                resolveFileName: resolveFileName,
                 onReady: onReady,
                 onPin: onPin
             )
@@ -2462,6 +2503,7 @@ extension IdeviceGateway {
         hostName: String,
         hostModel: String,
         outPath: String,
+        resolveFileName: (@Sendable (String, String) -> String)?,
         onRequestPin: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> Void
     ) async throws -> PairedDeviceRecord {
         try await withFFIDispatch {
@@ -2471,6 +2513,7 @@ extension IdeviceGateway {
                 hostName: hostName,
                 hostModel: hostModel,
                 outPath: outPath,
+                resolveFileName: resolveFileName,
                 onRequestPin: onRequestPin
             )
         }
