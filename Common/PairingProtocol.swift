@@ -42,8 +42,14 @@ public enum PairingProtocol: String, Codable, CustomStringConvertible, Sendable 
         switch self {
         case .rppairing:
             return MinimuxerConstants.remotePairingPort
-        case .lockdown, .unknown:
+        case .lockdown:
             return MinimuxerConstants.lockdowndPort
+        case .unknown:
+            if #available(iOS 17, tvOS 17, *) {
+                return MinimuxerConstants.remotePairingPort
+            } else {
+                return MinimuxerConstants.lockdowndPort
+            }
         }
     }
 }
