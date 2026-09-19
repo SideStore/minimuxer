@@ -33,7 +33,7 @@ extension String {
     }
 }
 
-public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
+public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @unchecked Sendable {
     public static let shared = IdeviceGateway()
     var lastError: Error? = nil
 

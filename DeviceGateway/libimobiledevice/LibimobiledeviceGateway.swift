@@ -72,7 +72,7 @@ public enum DeviceService: String, Sendable {
 private let kAfcChunkSize = 1024 * 1024 // 1 MB AFC bulk transfer chunk
 private let kDefaultTimeoutMs: Int32 = 120000
 
-public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
+public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @unchecked Sendable {
     public static let shared = LibimobiledeviceGateway()
 
     private var cachedUDID: String? = nil
