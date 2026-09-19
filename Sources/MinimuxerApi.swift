@@ -102,7 +102,7 @@ public protocol MinimuxerAPI: AnyObject {
     func mountDDI(docsPath: String) async throws -> Bool
     func isDDIMounted() async throws -> Bool
 
-    func fetchUDID() async throws -> String?
+    func fetchUDID() async throws -> String
     func testDeviceConnection(ifaddr: String, timeout: Int) -> Bool
 
     func sendIpaAfc(bundleId: String, ipaBytes: Data) async throws

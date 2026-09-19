@@ -36,7 +36,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
     func setLogging(_ enabled: Bool)
     func getPairingFileType() -> PairingProtocol
 
-    func fetchUDID() async throws -> String?
+    func fetchUDID() async throws -> String
     func getLockdownValue(key: String) async throws -> String?
 
     func isDDIMounted() async throws -> Bool

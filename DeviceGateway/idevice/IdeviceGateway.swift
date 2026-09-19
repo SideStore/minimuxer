@@ -253,7 +253,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
 
         guard let pairingFile = pairingFile else {
             debugLog("[IdeviceGateway] ensureRPConnection() failed because pairingFile is nil")
-            throw IdeviceGatewayError(.invalidPairingFile, reason: "pairingFile is nil")
+            throw IdeviceGatewayError(.notInitialized, reason: "pairingFile is nil")
         }
 
         guard let deviceEndpointIp = deviceEndpointIp else {
@@ -362,6 +362,9 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             do {
                 try ensureRPConnection()
                 err = connect(adapter, handshake, &client)
+            } catch let gwErr as IdeviceGatewayError {
+                lastError = gwErr
+                throw gwErr
             } catch {
                 let reason = "Service connection retry failed: \(error.localizedDescription)"
                 let errObj = IdeviceGatewayError(.serviceError, reason: reason)
@@ -638,7 +641,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         }
     }
 
-    private func syncFetchUDID() throws -> String? {
+    private func syncFetchUDID() throws -> String {
         debugLog("[IdeviceGateway] fetchUDID() started, mode = .\(pairingFileType)")
         try verifyInitialized()
 
@@ -646,7 +649,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             verboseLog("[IdeviceGateway] fetchUDID: retrieved live UDID: \(hwUdid)")
             return hwUdid
         }
-        return nil
+        throw IdeviceGatewayError(.serviceError, reason: "UniqueDeviceID not found on device")
     }
 
     private func syncGetLockdownValue(key: String) throws -> String? {
@@ -2296,7 +2299,7 @@ extension IdeviceGateway {
         }
     }
 
-    public func fetchUDID() async throws -> String? {
+    public func fetchUDID() async throws -> String {
         try await withFFIDispatch {
             try self.syncFetchUDID()
         }

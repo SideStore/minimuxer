@@ -397,7 +397,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
         debugLog("[LibimobiledeviceGateway] Initialized successfully with \(pairingFile.mode.rawValue) pairing")
     }
 
-    func syncFetchUDID() throws -> String? {
+    func syncFetchUDID() throws -> String {
         try verifyInitialized()
         do {
             if let hwUdid = try syncGetLockdownValue(key: "UniqueDeviceID"), !hwUdid.isEmpty {
@@ -408,7 +408,10 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
         } catch {
             debugLog("[LibimobiledeviceGateway] syncFetchUDID: failed to query lockdown: \(error)")
         }
-        return cachedUDID
+        if let cached = cachedUDID, !cached.isEmpty {
+            return cached
+        }
+        throw LibimobiledeviceGatewayError(.serviceError, reason: "UniqueDeviceID not found on device")
     }
 
     func syncGetLockdownValue(key: String) throws -> String? {
@@ -1386,7 +1389,7 @@ extension LibimobiledeviceGateway {
         }
     }
 
-    public func fetchUDID() async throws -> String? {
+    public func fetchUDID() async throws -> String {
         try await withFFIDispatch {
             try self.syncFetchUDID()
         }
