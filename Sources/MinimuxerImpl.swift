@@ -247,7 +247,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         do {
             return try await action()
         } catch let err as DeviceGatewayError {
-let lower = err.reason.lowercased()
+            let lower = err.reason.lowercased()
             if (err.code == .connectionFailed || err.code == .serviceError),
                lower.contains("broken pipe")        || lower.contains("brokenpipe")         ||
                lower.contains("connection reset")   || lower.contains("connectionreset")    ||

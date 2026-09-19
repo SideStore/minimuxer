@@ -138,7 +138,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         #else
         let upperBoundLevel = IdeviceLogLevel(rawValue: enabled ? 1 : 0)
         #endif
-// set actual logging
+        // set actual logging
         idevice_init_logger(upperBoundLevel, lowerBoundLevel, nil)
         super.setLogging(enabled)
     }
@@ -273,7 +273,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
                     sockaddrLen,
                     hostPtr,
                     pairingFile,
-false,
+                    false,
                     nil,
                     nil,
                     &adapter,
@@ -309,7 +309,7 @@ false,
 
     private enum PairingErrorCode: Int32 {
         case invalidHostID = 18
-// case pairingDialogResponsePending = 30 // Interactive pairing setup error, not an existing pairing file issue
+        // case pairingDialogResponsePending = 30 // Interactive pairing setup error, not an existing pairing file issue
         // case userDeniedPairing = 31            // Interactive pairing setup error, not an existing pairing file issue
         // case passwordProtected = 32            // Device passcode locked, not an invalid pairing file
         case remotePairing = 103
@@ -696,8 +696,8 @@ false,
                 if self.isPairingError(valErr) {
                     throw IdeviceGatewayError(.invalidPairingFile, reason: "Failed to get lockdown value for key \(key), error: (\(msg))")
                 } else {
-                throw IdeviceGatewayError(.serviceError, reason: "Failed to get lockdown value for key \(key), error: (\(msg))")
-            }
+                    throw IdeviceGatewayError(.serviceError, reason: "Failed to get lockdown value for key \(key), error: (\(msg))")
+                }
             }
             if let plistVal = plistVal {
                 defer {
@@ -1085,14 +1085,14 @@ false,
     private func startDebugserverService() throws -> UInt16 {
         var port: UInt16 = 0
         var ssl: Bool = false
-        
+
         try performWithEitherService(
             connectRP: lockdownd_connect_rsd,
             connectLockdown: lockdownd_connect,
             cleanup: lockdownd_client_free,
             serviceName: "lockdownd"
         ) { lockdownClient in
-                        verboseLog("[IdeviceGateway] starting debugserver service")
+            verboseLog("[IdeviceGateway] starting debugserver service")
             let err = "com.apple.debugserver".withCString { serviceNamePtr in
                 return lockdownd_start_service(lockdownClient, serviceNamePtr, &port, &ssl)
             }
@@ -1102,90 +1102,90 @@ false,
                 defer { idevice_error_free(err) }
                 throw IdeviceGatewayError(.serviceError, reason: "Failed to start debugserver service, error: (\(msg))")
             }
-            }
-            
-debugLog("[IdeviceGateway] debugserver started on port: \(port), ssl: \(ssl)")
+        }
+
+        debugLog("[IdeviceGateway] debugserver started on port: \(port), ssl: \(ssl)")
         return port
     }
 
     private func connectDebugProxy(port: UInt16) throws -> OpaquePointer {
-            var addr: OpaquePointer? = nil
-            let addrErr = idevice_usbmuxd_default_addr_new(&addr)
-            if let addrErr = addrErr {
-                debugLog("[IdeviceGateway] connectDebugProxy default_addr_new failed")
-                defer { idevice_error_free(addrErr) }
-                throw IdeviceGatewayError(.connectionFailed, reason: "Failed to get usbmuxd default addr")
-            }
-            guard let addr = addr else {
-                                throw IdeviceGatewayError(.connectionFailed, reason: "Usbmuxd default addr was nil")
-            }
-            defer { idevice_usbmuxd_addr_free(addr) }
-            
-            var conn: OpaquePointer? = nil
-                        let connErr = idevice_usbmuxd_new_default_connection(0, &conn)
-            if let connErr = connErr {
-                debugLog("[IdeviceGateway] connectDebugProxy new_default_connection failed")
-                defer { idevice_error_free(connErr) }
-                throw IdeviceGatewayError(.connectionFailed, reason: "Failed to create usbmuxd connection")
-            }
-            guard let conn = conn else {
-                                throw IdeviceGatewayError(.connectionFailed, reason: "Usbmuxd connection was nil")
-            }
-                        defer { idevice_usbmuxd_connection_free(conn) }
-            
-            var devices: UnsafeMutablePointer<OpaquePointer?>? = nil
-            var count: Int32 = 0
-            let devErr = idevice_usbmuxd_get_devices(conn, &devices, &count)
-            if let devErr = devErr {
-                debugLog("[IdeviceGateway] connectDebugProxy get_devices failed")
-                defer { idevice_error_free(devErr) }
-                throw IdeviceGatewayError(.connectionFailed, reason: "Failed to list usbmuxd devices")
-            }
-                        guard count > 0, let devicesPtr = devices, let firstDev = devicesPtr.pointee else {
-                                throw IdeviceGatewayError(.connectionFailed, reason: "No devices found on usbmuxd")
-            }
-            defer { idevice_usbmuxd_device_list_free(devices, count) }
-            
-            let deviceID = idevice_usbmuxd_device_get_device_id(firstDev)
-                        var debugDevice: OpaquePointer? = nil
-            let connectErr = "minimuxer-debug".withCString { labelPtr in
-                idevice_usbmuxd_connect_to_device(conn, deviceID, port, labelPtr, &debugDevice)
-            }
-            if let connectErr = connectErr {
-                debugLog("[IdeviceGateway] connectDebugProxy connect_to_device failed")
-                defer { idevice_error_free(connectErr) }
-                throw IdeviceGatewayError(.connectionFailed, reason: "Failed to connect to debugserver port \(port)")
-            }
-                        guard let debugDevice = debugDevice else {
-                                throw IdeviceGatewayError(.connectionFailed, reason: "Debug device handle was nil")
-            }
-                        defer { idevice_free(debugDevice) }
-            
-            var stream: OpaquePointer? = nil
-                       let streamErr = idevice_to_stream(debugDevice, &stream)
-           if let streamErr = streamErr {
-               debugLog("[IdeviceGateway] connectDebugProxy idevice_to_stream failed")
-               defer { idevice_error_free(streamErr) }
-               throw IdeviceGatewayError(.serviceError, reason: "Failed to convert device connection to stream")
-           }
-                        guard let stream = stream else {
-                                throw IdeviceGatewayError(.serviceError, reason: "Stream was nil")
-            }
-                        
-            var debugProxyClient: OpaquePointer? = nil
-                        let proxyErr = debug_proxy_new(stream, &debugProxyClient)
-            if let proxyErr = proxyErr {
-                let msg = self.getErrorMessage(from: proxyErr)
-                debugLog("[IdeviceGateway] connectDebugProxy debug_proxy_new failed: \(msg)")
-                defer { idevice_error_free(proxyErr) }
-idevice_stream_free(stream)
-                throw IdeviceGatewayError(.serviceError, reason: "Failed to create debug proxy client, error: (\(msg))")
-            }
-                        guard let debugProxyClient = debugProxyClient else {
-                idevice_stream_free(stream)
-                throw IdeviceGatewayError(.serviceError, reason: "Debug proxy client was nil")
-            }
-return debugProxyClient
+        var addr: OpaquePointer? = nil
+        let addrErr = idevice_usbmuxd_default_addr_new(&addr)
+        if let addrErr = addrErr {
+            debugLog("[IdeviceGateway] connectDebugProxy default_addr_new failed")
+            defer { idevice_error_free(addrErr) }
+            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to get usbmuxd default addr")
+        }
+        guard let addr = addr else {
+            throw IdeviceGatewayError(.connectionFailed, reason: "Usbmuxd default addr was nil")
+        }
+        defer { idevice_usbmuxd_addr_free(addr) }
+
+        var conn: OpaquePointer? = nil
+        let connErr = idevice_usbmuxd_new_default_connection(0, &conn)
+        if let connErr = connErr {
+            debugLog("[IdeviceGateway] connectDebugProxy new_default_connection failed")
+            defer { idevice_error_free(connErr) }
+            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to create usbmuxd connection")
+        }
+        guard let conn = conn else {
+            throw IdeviceGatewayError(.connectionFailed, reason: "Usbmuxd connection was nil")
+        }
+        defer { idevice_usbmuxd_connection_free(conn) }
+
+        var devices: UnsafeMutablePointer<OpaquePointer?>? = nil
+        var count: Int32 = 0
+        let devErr = idevice_usbmuxd_get_devices(conn, &devices, &count)
+        if let devErr = devErr {
+            debugLog("[IdeviceGateway] connectDebugProxy get_devices failed")
+            defer { idevice_error_free(devErr) }
+            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to list usbmuxd devices")
+        }
+        guard count > 0, let devicesPtr = devices, let firstDev = devicesPtr.pointee else {
+            throw IdeviceGatewayError(.connectionFailed, reason: "No devices found on usbmuxd")
+        }
+        defer { idevice_usbmuxd_device_list_free(devices, count) }
+
+        let deviceID = idevice_usbmuxd_device_get_device_id(firstDev)
+        var debugDevice: OpaquePointer? = nil
+        let connectErr = "minimuxer-debug".withCString { labelPtr in
+            idevice_usbmuxd_connect_to_device(conn, deviceID, port, labelPtr, &debugDevice)
+        }
+        if let connectErr = connectErr {
+            debugLog("[IdeviceGateway] connectDebugProxy connect_to_device failed")
+            defer { idevice_error_free(connectErr) }
+            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to connect to debugserver port \(port)")
+        }
+        guard let debugDevice = debugDevice else {
+            throw IdeviceGatewayError(.connectionFailed, reason: "Debug device handle was nil")
+        }
+        defer { idevice_free(debugDevice) }
+
+        var stream: OpaquePointer? = nil
+        let streamErr = idevice_to_stream(debugDevice, &stream)
+        if let streamErr = streamErr {
+            debugLog("[IdeviceGateway] connectDebugProxy idevice_to_stream failed")
+            defer { idevice_error_free(streamErr) }
+            throw IdeviceGatewayError(.serviceError, reason: "Failed to convert device connection to stream")
+        }
+        guard let stream = stream else {
+            throw IdeviceGatewayError(.serviceError, reason: "Stream was nil")
+        }
+
+        var debugProxyClient: OpaquePointer? = nil
+        let proxyErr = debug_proxy_new(stream, &debugProxyClient)
+        if let proxyErr = proxyErr {
+            let msg = self.getErrorMessage(from: proxyErr)
+            debugLog("[IdeviceGateway] connectDebugProxy debug_proxy_new failed: \(msg)")
+            defer { idevice_error_free(proxyErr) }
+            idevice_stream_free(stream)
+            throw IdeviceGatewayError(.serviceError, reason: "Failed to create debug proxy client, error: (\(msg))")
+        }
+        guard let debugProxyClient = debugProxyClient else {
+            idevice_stream_free(stream)
+            throw IdeviceGatewayError(.serviceError, reason: "Debug proxy client was nil")
+        }
+        return debugProxyClient
     }
 
     private func launchAppPre17(appId: String) throws {
@@ -1194,40 +1194,40 @@ return debugProxyClient
 
         let port = try startDebugserverService()
         let debugProxyClient = try connectDebugProxy(port: port)
-            defer { debug_proxy_free(debugProxyClient) }
-            
-            verboseLog("[IdeviceGateway] launchAppPre17() configuring debug proxy workspace")
-            try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetMaxPacketSize", args: ["\(MinimuxerConstants.maxPacketSize)"])
-            try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetWorkingDir", args: [container])
-            
-            try bundlePath.withCString { bundlePathPtr in
-                var argvptrs: [UnsafePointer<Int8>?] = [bundlePathPtr, bundlePathPtr]
-                var response: UnsafeMutablePointer<Int8>? = nil
-                verboseLog("[IdeviceGateway] launchAppPre17() setting argv for \(bundlePath)")
-                let argvErr = debug_proxy_set_argv(debugProxyClient, &argvptrs, UInt(argvptrs.count), &response)
-                if let argvErr = argvErr {
-                    let msg = self.getErrorMessage(from: argvErr)
-                    debugLog("[IdeviceGateway] launchAppPre17() debug_proxy_set_argv failed: \(msg)")
-                    defer { idevice_error_free(argvErr) }
-                    throw IdeviceGatewayError(.serviceError, reason: "Failed to set debug proxy argv, error: (\(msg))")
-                }
-                if let response = response {
-                    let respStr = String(cString: response)
-                    verboseLog("[IdeviceGateway] launchAppPre17() argv response: \(respStr)")
-                    free(response)
-                }
+        defer { debug_proxy_free(debugProxyClient) }
+
+        verboseLog("[IdeviceGateway] launchAppPre17() configuring debug proxy workspace")
+        try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetMaxPacketSize", args: ["\(MinimuxerConstants.maxPacketSize)"])
+        try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetWorkingDir", args: [container])
+
+        try bundlePath.withCString { bundlePathPtr in
+            var argvptrs: [UnsafePointer<Int8>?] = [bundlePathPtr, bundlePathPtr]
+            var response: UnsafeMutablePointer<Int8>? = nil
+            verboseLog("[IdeviceGateway] launchAppPre17() setting argv for \(bundlePath)")
+            let argvErr = debug_proxy_set_argv(debugProxyClient, &argvptrs, UInt(argvptrs.count), &response)
+            if let argvErr = argvErr {
+                let msg = self.getErrorMessage(from: argvErr)
+                debugLog("[IdeviceGateway] launchAppPre17() debug_proxy_set_argv failed: \(msg)")
+                defer { idevice_error_free(argvErr) }
+                throw IdeviceGatewayError(.serviceError, reason: "Failed to set debug proxy argv, error: (\(msg))")
             }
-            
-            verboseLog("[IdeviceGateway] launchAppPre17() launching application")
-            try self.sendDebugProxyCommand(client: debugProxyClient, name: "qLaunchSuccess", args: [])
-            try self.sendDebugProxyCommand(client: debugProxyClient, name: "D", args: [])
-            debugLog("[IdeviceGateway] launchAppPre17() app launched successfully")
+            if let response = response {
+                let respStr = String(cString: response)
+                verboseLog("[IdeviceGateway] launchAppPre17() argv response: \(respStr)")
+                free(response)
             }
+        }
+
+        verboseLog("[IdeviceGateway] launchAppPre17() launching application")
+        try self.sendDebugProxyCommand(client: debugProxyClient, name: "qLaunchSuccess", args: [])
+        try self.sendDebugProxyCommand(client: debugProxyClient, name: "D", args: [])
+        debugLog("[IdeviceGateway] launchAppPre17() app launched successfully")
+    }
 
     private func syncDebugApp(appId: String) throws {
         debugLog("[IdeviceGateway] debugApp() called, appId: \(appId), mode: .\(pairingFileType)")
         try verifyInitialized()
-        
+
         if pairingFileType == .lockdown {
             verboseLog("[IdeviceGateway] debugApp() attempting legacy lockdownd debugserver via launchAppPre17")
             try launchAppPre17(appId: appId)
@@ -1235,7 +1235,7 @@ return debugProxyClient
             let (_, bundlePath, executableName) = try getAppPaths(appId: appId)
             try performWithService(
                 connect: debug_proxy_connect_rsd,
-                                cleanup: debug_proxy_free,
+                cleanup: debug_proxy_free,
                 serviceName: "debug proxy"
             ) { client in
                 guard let pid = try self.findProcessPID(
@@ -1267,17 +1267,17 @@ return debugProxyClient
     private func syncDebugProcess(pid: UInt32) throws {
         debugLog("[IdeviceGateway] debugProcess() called, pid: \(pid), mode: .\(pairingFileType)")
         try verifyInitialized()
-if pairingFileType == .rppairing {
-        try performWithService(
-            connect: debug_proxy_connect_rsd,
-                        cleanup: debug_proxy_free,
-            serviceName: "debug proxy"
-        ) { client in
-            let commands = [("vAttach;\(String(format: "%x", pid))", [String]()), ("D", [String]())]
-            for (name, args) in commands {
-                try self.sendDebugProxyCommand(client: client, name: name, args: args)
+        if pairingFileType == .rppairing {
+            try performWithService(
+                connect: debug_proxy_connect_rsd,
+                cleanup: debug_proxy_free,
+                serviceName: "debug proxy"
+            ) { client in
+                let commands = [("vAttach;\(String(format: "%x", pid))", [String]()), ("D", [String]())]
+                for (name, args) in commands {
+                    try self.sendDebugProxyCommand(client: client, name: name, args: args)
+                }
             }
-}
         } else {
             throw IdeviceGatewayError(.unsupportedOperation, reason: "Attaching to process by PID is only supported in .rppairing mode")
         }
