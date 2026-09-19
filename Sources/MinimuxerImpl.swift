@@ -191,9 +191,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
 
         let deviceUDID: String
         do {
-            deviceUDID = try await runIdeviceWithChecks("while fetching device UDID", catchAll: MinimuxerError.fetchUDID) {
-                try await fetchUDID()
-            }
+            deviceUDID = try await fetchUDID()
         } catch {
             return .failure(error)
         }
@@ -210,9 +208,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
 
         if withDDIMountCheck {
             do {
-                let isMounted = try await runIdeviceWithChecks("while checking DDI mount status", catchAll: { .mount(protocol: activeProtocol, reason: $0) }) {
-                    try await isDDIMounted()
-                }
+                let isMounted = try await isDDIMounted()
                 verboseLog("minimuxer status (.\(activeProtocol)): dmg=\(isMounted) started=\(self.proxyServer.isListening)")
                 return .success(isMounted)
             } catch {
@@ -223,9 +219,11 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         return .success(true)
     } 
 
-    private func runIdeviceWithChecks<T>(_ context: String, catchAll: (String) -> MinimuxerError, action: () async throws -> T) async throws(MinimuxerError) -> T {
+    private func runIdeviceWithChecks<T: Sendable>(_ context: String, catchAll: @escaping (String) -> MinimuxerError, action: @escaping @Sendable () async throws -> T) async throws(MinimuxerError) -> T {
         do {
-            return try await action()
+            return try await matchingPriority {
+                try await action()
+            }
         } catch let err as DeviceGatewayError {
             throw err.asMinimuxerError(protocol: activeProtocol, catchAll: catchAll)
         } catch {
@@ -396,81 +394,81 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     func isDDIMounted() async throws -> Bool {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while checking DDI mount status", catchAll: { .mount(protocol: self.activeProtocol, reason: $0) }) {
             try await self.gateway.isDDIMounted()
         }
     }
 
     func fetchUDID() async throws -> String {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while fetching device UDID", catchAll: MinimuxerError.fetchUDID) {
             try await self.gateway.fetchUDID()
         }
     }
 
     func sendIpaAfc(bundleId: String, ipaBytes: Data) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while sending IPA via AFC", catchAll: MinimuxerError.rwAfc) {
             try await self.gateway.sendIpaAfc(bundleId: bundleId, ipaBytes: ipaBytes)
         }
     }
 
     func sendAppBundleAfc(bundleId: String, appURL: URL) async throws {
-        try await matchingPriority {
+        try await runIdeviceWithChecks("while sending App Bundle via AFC", catchAll: MinimuxerError.rwAfc) {
             try await self.gateway.sendAppBundleAfc(bundleId: bundleId, appURL: appURL)
         }
     }
 
     func installIpa(bundleId: String) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while installing IPA", catchAll: MinimuxerError.installApp) {
             try await self.gateway.installIpa(bundleId: bundleId)
         }
     }
 
     func installAppBundle(bundleId: String, appName: String) async throws {
-        try await matchingPriority {
+        try await runIdeviceWithChecks("while installing App Bundle", catchAll: MinimuxerError.installApp) {
             try await self.gateway.installAppBundle(bundleId: bundleId, appName: appName)
         }
     }
 
     func removeApp(bundleId: String) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while removing App", catchAll: MinimuxerError.uninstallApp) {
             try await self.gateway.removeApp(bundleId: bundleId)
         }
     }
 
     func wipeContainer(identifier: String) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while wiping container", catchAll: MinimuxerError.uninstallApp) {
             try await self.gateway.wipeContainer(identifier: identifier)
         }
     }
 
     func debugApp(appId: String) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while debugging App", catchAll: MinimuxerError.createDebug) {
             try await self.ensureDDIMounted()
             try await self.gateway.debugApp(appId: appId)
         }
     }
 
     func attachDebugger(pid: UInt32) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while debugging process", catchAll: MinimuxerError.createDebug) {
             try await self.ensureDDIMounted()
             try await self.gateway.debugProcess(pid: pid)
         }
     }
 
     func installProvisioningProfile(profile: Data) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while installing profile", catchAll: MinimuxerError.profileInstall) {
             try await self.gateway.installProvisioningProfile(profile: profile)
         }
     }
 
     func removeProvisioningProfile(id: String) async throws {
-        try await matchingPriority{
+        try await runIdeviceWithChecks("while removing profile", catchAll: MinimuxerError.profileRemove) {
             try await self.gateway.removeProvisioningProfile(id: id)
         }
     }
 
-    func dumpProfiles(docsPath: String, mode: ProfileDumpMode) async throws -> String {
-        try await matchingPriority {
+    func dumpProfiles(docsPath: String, mode: ProfileDumpMode = .zip) async throws -> String {
+        try await runIdeviceWithChecks("while dumping profiles", catchAll: MinimuxerError.createMisagent) {
             switch mode {
                 case .raw:
                     verboseLog("[minimuxer] dumpProfiles(mode: .raw) dumping to: \(docsPath)")
@@ -494,19 +492,19 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     func afcListDirectory(bundleId: String, path: String) async throws -> [String] {
-        try await matchingPriority {
+        try await runIdeviceWithChecks("while listing AFC directory", catchAll: MinimuxerError.createAfc) {
             try await self.gateway.afcListDirectory(bundleId: bundleId, path: path)
         }
     }
 
     func afcReadFile(bundleId: String, path: String) async throws -> Data {
-        try await matchingPriority {
+        try await runIdeviceWithChecks("while reading AFC file", catchAll: MinimuxerError.rwAfc) {
             try await self.gateway.afcReadFile(bundleId: bundleId, path: path)
         }
     }
 
     func afcGetFileInfo(bundleId: String, path: String) async throws -> (isDirectory: Bool, fileSize: Int64) {
-        try await matchingPriority {
+        try await runIdeviceWithChecks("while getting AFC file info", catchAll: MinimuxerError.createAfc) {
             try await self.gateway.afcGetFileInfo(bundleId: bundleId, path: path)
         }
     }
