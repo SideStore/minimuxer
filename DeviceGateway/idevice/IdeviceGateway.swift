@@ -132,12 +132,15 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     }
 
     public override func setLogging(_ enabled: Bool) {
-        super.setLogging(enabled)
-        idevice_init_logger(enabled ? IdeviceLogLevel(rawValue: 1) : IdeviceLogLevel(rawValue: 0), IdeviceLogLevel(rawValue: 0), nil)
+        let lowerBoundLevel = IdeviceLogLevel(rawValue: 0)
         #if DEBUG
-        // just comment/uncomment to override above set logging level during local debugging
-//        idevice_init_logger(IdeviceLogLevel(rawValue: 4), IdeviceLogLevel(rawValue: 0), nil)
+        let upperBoundLevel = IdeviceLogLevel(rawValue: 5)
+        #else
+        let upperBoundLevel = IdeviceLogLevel(rawValue: enabled ? 1 : 0)
         #endif
+// set actual logging
+        idevice_init_logger(upperBoundLevel, lowerBoundLevel, nil)
+        super.setLogging(enabled)
     }
 
     private func syncStart(pairingFileContent: String) throws {
