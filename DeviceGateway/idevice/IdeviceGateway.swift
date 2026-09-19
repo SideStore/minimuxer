@@ -306,17 +306,27 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         debugLog("[IdeviceGateway] ensureRPConnection() tunnel_create_rppairing succeeded, adapter: \(String(describing: adapter)), handshake: \(String(describing: handshake))")
     }
 
+    private enum PairingErrorCode: Int32 {
+        case invalidHostID = 18
+        case pairingDialogResponsePending = 30
+        case userDeniedPairing = 31
+        case passwordProtected = 32
+        case remotePairing = 103
+    }
+
     private func isPairingError(_ err: UnsafeMutablePointer<IdeviceFfiError>) -> Bool {
-        let code = err.pointee.code
-        // 103: RemotePairing, 18: InvalidHostID, 30: PairingDialogResponsePending, 31: UserDeniedPairing, 32: PasswordProtected
-        if code == 103 || code == 18 || code == 30 || code == 31 || code == 32 {
+        if PairingErrorCode(rawValue: err.pointee.code) != nil {
             return true
         }
         
         if let msgPtr = err.pointee.message {
             let msg = String(cString: msgPtr).lowercased()
-            if msg.contains("invalidconf") || msg.contains("pairing") || msg.contains("handshake") ||
-                msg.contains("connection reset") || msg.contains("connectionreset") {
+            if msg.contains("invalidconf")      || 
+               msg.contains("pairing")          || 
+               msg.contains("handshake")        ||
+               msg.contains("bad_certificate")  || 
+               msg.contains("certificate_unknown") 
+            {
                 return true
             }
         }
