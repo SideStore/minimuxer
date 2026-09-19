@@ -659,6 +659,33 @@ false,
             cleanup: lockdownd_client_free,
             serviceName: "lockdownd"
         ) { client in
+            if self.pairingFileType == .lockdown, let pairingFileData = self.pairingFileData {
+                var pf: OpaquePointer? = nil
+                let parseErr = pairingFileData.withUnsafeBytes { buf in
+                    idevice_pairing_file_from_bytes(buf.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt(pairingFileData.count), &pf)
+                }
+                if let parseErr = parseErr {
+                    defer { safeFreeError(parseErr) }
+                    let msg = self.getErrorMessage(from: parseErr)
+                    throw IdeviceGatewayError(.invalidPairingFile, reason: "Failed to parse pairing file: \(msg)")
+                }
+                if let pf = pf {
+                    defer { idevice_pairing_file_free(pf) }
+                    verboseLog("[IdeviceGateway] getLockdownValue starting lockdownd session for \(key)")
+                    let sessionErr = lockdownd_start_session(client, pf)
+                    if let sessionErr = sessionErr {
+                        defer { safeFreeError(sessionErr) }
+                        let msg = self.getErrorMessage(from: sessionErr)
+                        debugLog("[IdeviceGateway] getLockdownValue lockdownd_start_session failed: \(msg)")
+                        if self.isPairingError(sessionErr) {
+                            throw IdeviceGatewayError(.invalidPairingFile, reason: "Lockdown session failed (pairing invalid): \(msg)")
+                        } else {
+                            throw IdeviceGatewayError(.connectionFailed, reason: "Lockdown session failed: \(msg)")
+                        }
+                    }
+                }
+            }
+
             var plistVal: plist_t? = nil
             verboseLog("[IdeviceGateway] getLockdownValue calling lockdownd_get_value for \(key)")
             let valErr = lockdownd_get_value(client, key, nil, &plistVal)
@@ -666,7 +693,11 @@ false,
                 let msg = self.getErrorMessage(from: valErr)
                 debugLog("[IdeviceGateway] getLockdownValue lockdownd_get_value failed for \(key): \(msg)")
                 defer { safeFreeError(valErr) }
+                if self.isPairingError(valErr) {
+                    throw IdeviceGatewayError(.invalidPairingFile, reason: "Failed to get lockdown value for key \(key), error: (\(msg))")
+                } else {
                 throw IdeviceGatewayError(.serviceError, reason: "Failed to get lockdown value for key \(key), error: (\(msg))")
+            }
             }
             if let plistVal = plistVal {
                 defer {
