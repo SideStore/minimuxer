@@ -8,6 +8,7 @@
 
 import Foundation
 import Combine
+import ZIPFoundation
 internal import DeviceGatewayAPI
 internal import MinimuxerCommon
 
@@ -468,9 +469,27 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
     }
 
-    func dumpProfiles(docsPath: String) async throws -> String {
-        try await matchingPriority{
-            try await self.gateway.dumpProfiles(docsPath: docsPath)
+    func dumpProfiles(docsPath: String, mode: ProfileDumpMode) async throws -> String {
+        try await matchingPriority {
+            switch mode {
+                case .raw:
+                    verboseLog("[minimuxer] dumpProfiles(mode: .raw) dumping to: \(docsPath)")
+                    return try await self.gateway.dumpProfiles(docsPath: docsPath)
+                case .zip:
+                    verboseLog("[minimuxer] dumpProfiles(mode: .zip) staging to temporary directory")
+                    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+                    defer {
+                        verboseLog("[minimuxer] dumpProfiles(mode: .zip) cleaning up temporary directory: \(tempDir.path)")
+                        try? FileManager.default.removeItem(at: tempDir)
+                    }
+
+                    let dumpedPath = try await self.gateway.dumpProfiles(docsPath: tempDir.path)
+                    let zipURL = URL(fileURLWithPath: docsPath).appendingPathComponent("Profiles-\(ISO8601DateFormatter().string(from: Date())).zip")
+                    verboseLog("[minimuxer] dumpProfiles(mode: .zip) compressing \(dumpedPath) -> \(zipURL.path)")
+                    try FileManager.default.zipItem(at: URL(fileURLWithPath: dumpedPath), to: zipURL, shouldKeepParent: false)
+                    verboseLog("[minimuxer] dumpProfiles(mode: .zip) successfully created archive: \(zipURL.path)")
+                    return zipURL.path
+            }
         }
     }
 

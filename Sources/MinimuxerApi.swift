@@ -19,6 +19,11 @@ public enum MinimuxerComponent: String {
     case mounter
 }
 
+public enum ProfileDumpMode: Sendable {
+    case zip
+    case raw
+}
+
 public enum DeviceConnectionMode: String, Codable, Sendable {
     case localVPN      // On-device loopback VPN
     case remoteServer  // Remote server endpoint ex: externalServer on VPN, on LAN, on router, etc
@@ -114,7 +119,7 @@ public protocol MinimuxerAPI: AnyObject {
     func attachDebugger(pid: UInt32) async throws
     func installProvisioningProfile(profile: Data) async throws
     func removeProvisioningProfile(id: String) async throws
-    func dumpProfiles(docsPath: String) async throws -> String
+    func dumpProfiles(docsPath: String, mode: ProfileDumpMode) async throws -> String
 
     func afcListDirectory(bundleId: String, path: String) async throws -> [String]
     func afcReadFile(bundleId: String, path: String) async throws -> Data
@@ -128,6 +133,10 @@ public extension MinimuxerAPI {
 
     func testDeviceConnection(ifaddr: String) -> Bool {
         testDeviceConnection(ifaddr: ifaddr, timeout: self.deviceProbeTimeout)
+    }
+
+    func dumpProfiles(docsPath: String, mode: ProfileDumpMode = .zip) async throws -> String {
+        try await dumpProfiles(docsPath: docsPath, mode: mode)
     }
 }
 

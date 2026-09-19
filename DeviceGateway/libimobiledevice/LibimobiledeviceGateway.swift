@@ -684,6 +684,9 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
     }
 
     func syncDumpProfiles(docsPath: String) throws -> String {
+        let path = docsPath.hasPrefix("file://") ? String(docsPath.dropFirst(7)) : docsPath
+        let dumpDir = path.hasSuffix("/Profiles") || path.hasSuffix("/Profiles/") ? path : "\(path)/Profiles"
+        try? FileManager.default.createDirectory(atPath: dumpDir, withIntermediateDirectories: true)
         if pairingFileType == .rppairing {
             return try withRSDService(.misagent) { stream in
                 try rsdSendPlist(stream, dict: ["MessageType": "CopyAll"])
@@ -692,10 +695,10 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
                     return ""
                 }
                 for (idx, pData) in profiles.enumerated() {
-                    let path = (docsPath as NSString).appendingPathComponent("Profile_\(idx).mobileprovision")
-                    try? pData.write(to: URL(fileURLWithPath: path))
+                    let filePath = (dumpDir as NSString).appendingPathComponent("Profile_\(idx).mobileprovision")
+                    try? pData.write(to: URL(fileURLWithPath: filePath))
                 }
-                return "Successfully dumped \(profiles.count) profiles"
+                return dumpDir
             }
         }
 

@@ -1315,7 +1315,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             }
 
             let path = docsPath.hasPrefix("file://") ? String(docsPath.dropFirst(7)) : docsPath
-            let dumpDir = "\(path)/PROVISION"
+            let dumpDir = path.hasSuffix("/Profiles") || path.hasSuffix("/Profiles/") ? path : "\(path)/Profiles"
             verboseLog("[IdeviceGateway] dumpProfiles() writing profiles to: \(dumpDir), count: \(outCount)")
             try? FileManager.default.createDirectory(atPath: dumpDir, withIntermediateDirectories: true)
 
