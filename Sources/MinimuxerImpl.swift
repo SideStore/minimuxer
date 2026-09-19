@@ -247,8 +247,12 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         do {
             return try await action()
         } catch let err as DeviceGatewayError {
+let lower = err.reason.lowercased()
             if (err.code == .connectionFailed || err.code == .serviceError),
-               err.reason.lowercased().contains("broken pipe") || err.reason.lowercased().contains("brokenpipe") 
+               lower.contains("broken pipe")        || lower.contains("brokenpipe")         ||
+               lower.contains("connection reset")   || lower.contains("connectionreset")    ||
+               lower.contains("early eof")          || lower.contains("unexpectedeof")      ||
+               lower.contains("no route to host")   || lower.contains("connection refused")
             {
                 throw MinimuxerError.noVPN("VPN tunnel connection severed \(context). Cause: \(err.reason)")
             }
