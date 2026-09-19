@@ -15,6 +15,8 @@ final internal class HeartbeatService {
     let proxyServer: UsbmuxdProxyServer
     let endpoint: DeviceEndpoint
 
+    private let sleepNs: UInt64 = MinimuxerConstants.heartbeatInterval * 1_000_000
+
     init(gateway: any DeviceGatewayAPI, proxyServer: UsbmuxdProxyServer, endpoint: DeviceEndpoint) {
         self.gateway = gateway
         self.proxyServer = proxyServer
@@ -90,11 +92,11 @@ final internal class HeartbeatService {
     private func heartbeatLoop() async {
         while !self.proxyServer.isListening {
             logIfNeeded("Waiting for usbmuxd to be ready...", isVerbose: true)
-            try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
+            try? await Task.sleep(nanoseconds: sleepNs)
         }
         verboseLog("[minimuxer] heartbeat-task: usbmuxd is ready")
 
-        var currentInterval: UInt64 = 1000
+        var currentInterval: UInt64 = MinimuxerConstants.heartbeatInterval
 
         while await state.running {
             let tunnelPeerIp: String
@@ -103,7 +105,7 @@ final internal class HeartbeatService {
             } catch {
                 logIfNeeded("device IP unavailable", isVerbose: true)
                 lastBeatSuccessful = false
-                try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
+                try? await Task.sleep(nanoseconds: sleepNs)
                 continue
             }
             
@@ -112,7 +114,7 @@ final internal class HeartbeatService {
             if !NetworkUtils.testTCP(ip: tunnelPeerIp, port: targetPort) {
                 logIfNeeded("device IP not reachable, waiting...", isVerbose: true)
                 lastBeatSuccessful = false
-                try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
+                try? await Task.sleep(nanoseconds: sleepNs)
                 continue
             }
 
@@ -123,7 +125,7 @@ final internal class HeartbeatService {
             } catch {
                 logIfNeeded("Heartbeat failed: \(error)")
                 lastBeatSuccessful = false
-                try? await Task.sleep(nanoseconds: MinimuxerConstants.heartbeatSleepNs)
+                try? await Task.sleep(nanoseconds: sleepNs)
             }
         }
     }

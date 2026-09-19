@@ -41,6 +41,7 @@ public enum MinimuxerError: Error, Equatable, CustomStringConvertible, Localized
     case createProcessControl(String)
 
     case getLockdownValue(String)
+    case fetchUDID(String)
     case connect(String)
     case close(String)
     case xpcHandshake(String)
@@ -91,6 +92,7 @@ public enum MinimuxerError: Error, Equatable, CustomStringConvertible, Localized
         case .createRemoteServer(let r): return "CreateRemoteServer: \(r)"
         case .createProcessControl(let r): return "CreateProcessControl: \(r)"
         case .getLockdownValue(let r): return "GetLockdownValue: \(r)"
+        case .fetchUDID(let r): return "FetchUDID: \(r)"
         case .connect(let r): return "Connect: \(r)"
         case .close(let r): return "Close: \(r)"
         case .xpcHandshake(let r): return "XpcHandshake: \(r)"
@@ -140,13 +142,13 @@ extension DeviceGatewayError {
         (code == .connectionFailed || code == .noConnection) && !isVPNDrop
     }
 
-    func asMinimuxerError(protocol activeProtocol: PairingProtocol) throws -> MinimuxerError {
+    func asMinimuxerError(protocol activeProtocol: PairingProtocol, catchAll: (String) -> MinimuxerError) -> MinimuxerError {
         if code == .invalidPairingFile {
             return .invalidPairing(protocol: activeProtocol, reason: reason)
         }
         if isVPNDrop {
             return .invalidVPN(reason)
         }
-        throw self
+        return catchAll(reason)
     }
 }

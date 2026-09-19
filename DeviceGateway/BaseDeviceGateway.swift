@@ -54,10 +54,6 @@ open class BaseDeviceGateway: @unchecked Sendable {
         self.isInitialized = initialized
     }
 
-    public func getPairingFileType() -> PairingProtocol {
-        pairingFileType
-    }
-
     public func getPort(for protocolType: PairingProtocol) -> UInt16 {
         protocolPorts[protocolType] ?? protocolType.defaultPort
     }

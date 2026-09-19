@@ -30,6 +30,10 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     let endpoint: DeviceEndpoint
     let connectionManager: DeviceConnectionManager
     let heartbeat: HeartbeatService
+    
+    var activeProtocol: PairingProtocol {
+        gateway.pairingFileType
+    }
 
     init(
         gateway: any DeviceGatewayAPI,
@@ -76,11 +80,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     var isLoggingEnabled: Bool { MinimuxerLogging.isLoggingEnabled }
     
     var isPairingFileLoaded: Bool {
-        return getPairingFileType() != .unknown
-    }
-    
-    func getPairingFileType() -> PairingProtocol {
-        return self.gateway.getPairingFileType()
+        return pairingFileType != .unknown
     }
 
 
@@ -97,13 +97,6 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         await self.network.refreshEndpoint()
     }
     
-    @discardableResult
-    private func checkDDIMountStatus() async throws -> Bool {
-        let isMounted = try await isDDIMounted()
-        verboseLog("minimuxer status (\(self.gateway.pairingFileType)): dmg=\(isMounted) started=\(self.proxyServer.isListening)")
-        return isMounted
-    }
-
     func isReady(withNetworkCheck: Bool, withDDIMountCheck: Bool) async -> Result<Bool, MinimuxerError> {
         if !isPairingFileLoaded {
             debugLog("[minimuxer] minimuxer not ready: pairing file not loaded")
@@ -155,7 +148,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
 
         // check if pairing file is loaded
-        let pairingType = getPairingFileType()
+        let pairingType = pairingFileType
         if pairingType == .unknown {
             debugLog("[minimuxer] minimuxer not ready: no valid pairing file loaded")
             return .failure(.pairingNotLoaded("No valid pairing file has been loaded in Minimuxer"))
@@ -167,36 +160,34 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             deviceIp = try await self.endpoint.ip()
         } catch {
             switch connectionMode {
-            case .localVPN:
-                debugLog("[minimuxer] minimuxer not ready: tunnel peer IP not available despite tunnel iface being present")
-                return .failure(.noDevice("VPN tunnel iface is up but tunnel peer IP is not yet reachable — VPN may not be routing device traffic correctly. Cause: \(error.localizedDescription)"))
-            case .remoteServer:
-                debugLog("[minimuxer] minimuxer not ready: remote endpoint IP is not configured or reachable")
-                return .failure(.noDevice("Remote endpoint IP is not configured or reachable. Cause: \(error.localizedDescription)"))
-            case .notConfigured:
-                return .failure(connectionNotConfiguredError())
+                case .localVPN:
+                    debugLog("[minimuxer] minimuxer not ready: tunnel peer IP not available despite tunnel iface being present")
+                    return .failure(.noDevice("VPN tunnel iface is up but tunnel peer IP is not yet reachable — VPN may not be routing device traffic correctly. Cause: \(error.localizedDescription)"))
+                case .remoteServer:
+                    debugLog("[minimuxer] minimuxer not ready: remote endpoint IP is not configured or reachable")
+                    return .failure(.noDevice("Remote endpoint IP is not configured or reachable. Cause: \(error.localizedDescription)"))
+                case .notConfigured:
+                    return .failure(connectionNotConfiguredError())
             }
         }
         
         let peerReachable = testDeviceConnection(ifaddr: deviceIp)
         if !peerReachable {
             switch connectionMode {
-            case .localVPN:
-                debugLog("[minimuxer] minimuxer not ready: failed to connect to tunnel peer IP")
-                return .failure(.invalidVPN("VPN tunnel iface is up and tunnel peer IP \(deviceIp) is known, but TCP port poll failed — device may be unreachable on this interface"))
-            case .remoteServer:
-                debugLog("[minimuxer] minimuxer not ready: failed to connect to remote endpoint IP \(deviceIp)")
-                return .failure(.notReachable("Remote endpoint \(deviceIp) is configured, but TCP port poll failed — target device is unreachable"))
-            case .notConfigured:
-                return .failure(connectionNotConfiguredError())
+                case .localVPN:
+                    debugLog("[minimuxer] minimuxer not ready: failed to connect to tunnel peer IP")
+                    return .failure(.invalidVPN("VPN tunnel iface is up and tunnel peer IP \(deviceIp) is known, but TCP port poll failed — device may be unreachable on this interface"))
+                case .remoteServer:
+                    debugLog("[minimuxer] minimuxer not ready: failed to connect to remote endpoint IP \(deviceIp)")
+                    return .failure(.notReachable("Remote endpoint \(deviceIp) is configured, but TCP port poll failed — target device is unreachable"))
+                case .notConfigured:
+                    return .failure(connectionNotConfiguredError())
             }
         }
 
-        let activeProtocol = self.gateway.pairingFileType
-
         let deviceUDID: String
         do {
-            deviceUDID = try await runIdeviceCheckingVPN("while fetching device UDID") {
+            deviceUDID = try await runIdeviceWithChecks("while fetching device UDID", catchAll: MinimuxerError.fetchUDID) {
                 try await fetchUDID()
             }
         } catch {
@@ -215,39 +206,28 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             }
         }
 
-        // end of core validation
-
         if withDDIMountCheck {
             do {
-                try await checkDDIMountStatus()
-            } catch {
-                if case .mount = error {
-                    return .failure(error)
+                let isMounted = try await runIdeviceWithChecks("while checking DDI mount status", catchAll: { .mount(protocol: activeProtocol, reason: $0) }) {
+                    try await isDDIMounted()
                 }
-                return .failure(.mount(protocol: activeProtocol, reason: error.description))
+                verboseLog("minimuxer status (.\(activeProtocol)): dmg=\(isMounted) started=\(self.proxyServer.isListening)")
+                return .success(isMounted)
+            } catch {
+                return .failure(error)
             }
         }
 
         return .success(true)
     } 
 
-    private func runIdeviceCheckingVPN<T>(_ context: String, action: () async throws -> T) async throws -> T {
+    private func runIdeviceWithChecks<T>(_ context: String, catchAll: (String) -> MinimuxerError, action: () async throws -> T) async throws(MinimuxerError) -> T {
         do {
             return try await action()
         } catch let err as DeviceGatewayError {
-            if err.code == .invalidPairingFile {
-                throw MinimuxerError.invalidPairing(protocol: self.gateway.pairingFileType, reason: err.reason)
-            }
-            let lower = err.reason.lowercased()
-            if (err.code == .connectionFailed || err.code == .serviceError),
-               lower.contains("broken pipe")        || lower.contains("brokenpipe")         ||
-               lower.contains("connection reset")   || lower.contains("connectionreset")    ||
-               lower.contains("early eof")          || lower.contains("unexpectedeof")      ||
-               lower.contains("no route to host")   || lower.contains("connection refused")
-            {
-                throw MinimuxerError.invalidVPN("VPN tunnel connection terminated \(context). Cause: \(err.reason)")
-            }
-            throw err
+            throw err.asMinimuxerError(protocol: activeProtocol, catchAll: catchAll)
+        } catch {
+            throw (error as? MinimuxerError) ?? catchAll("\(error)")
         }
     }
 

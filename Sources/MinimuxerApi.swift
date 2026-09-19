@@ -83,7 +83,6 @@ public protocol MinimuxerAPI: AnyObject {
     var pairingFileType: PairingProtocol { get }
     var isLoggingEnabled: Bool { get }
     var isPairingFileLoaded: Bool { get }
-    func getPairingFileType() -> PairingProtocol
     var deviceProbeTimeout: Int { get }
     
     var statusPublisher: AnyPublisher<Result<Bool, MinimuxerError>, Never> { get }
