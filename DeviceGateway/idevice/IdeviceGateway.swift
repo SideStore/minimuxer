@@ -627,100 +627,12 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
     private func syncFetchUDID() throws -> String? {
         debugLog("[IdeviceGateway] fetchUDID() started, mode = .\(pairingFileType)")
         try verifyInitialized()
-        if pairingFileType == .rppairing {
-            do {
-                verboseLog("[IdeviceGateway] fetchUDID() calling ensureRPConnection()")
-                try ensureRPConnection()
-            } catch {
-                debugLog("[IdeviceGateway] fetchUDID() ensureRPConnection failed with error: \(error)")
-                return nil
-            }
-            guard let adapter = adapter, let handshake = handshake else {
-                debugLog("[IdeviceGateway] fetchUDID() adapter (\(String(describing: adapter))) or handshake (\(String(describing: handshake))) is nil")
-                return nil
-            }
-            var lockdownClient: OpaquePointer? = nil
-            verboseLog("[IdeviceGateway] fetchUDID() connecting lockdownd_connect_rsd")
-            var connectErr = lockdownd_connect_rsd(adapter, handshake, &lockdownClient)
-            if let firstErr = connectErr {
-                debugLog("[IdeviceGateway] fetchUDID() lockdownd_connect_rsd failed on existing connection, invalidating and retrying with fresh connection")
-                idevice_error_free(firstErr)
-                invalidateConnection()
-                
-                do {
-                    try ensureRPConnection()
-                    guard let freshAdapter = self.adapter, let freshHandshake = self.handshake else { return nil }
-                    connectErr = lockdownd_connect_rsd(freshAdapter, freshHandshake, &lockdownClient)
-                    if let secondErr = connectErr {
-                        debugLog("[IdeviceGateway] fetchUDID() lockdownd_connect_rsd retry failed")
-                        idevice_error_free(secondErr)
-                        invalidateConnection()
-                        return nil
-                    }
-                } catch {
-                    debugLog("[IdeviceGateway] fetchUDID() retry ensureRPConnection failed with error: \(error)")
-                    return nil
-                }
-            }
-            guard let client = lockdownClient else {
-                debugLog("[IdeviceGateway] fetchUDID() lockdownClient is nil after connect")
-                return nil
-            }
-            defer { lockdownd_client_free(client) }
-            
-            var plistVal: plist_t? = nil
-            verboseLog("[IdeviceGateway] fetchUDID() calling lockdownd_get_value for UniqueDeviceID")
-            let valErr = lockdownd_get_value(client, "UniqueDeviceID", nil, &plistVal)
-            if let valErr = valErr {
-                debugLog("[IdeviceGateway] fetchUDID() lockdownd_get_value failed")
-                safeFreeError(valErr)
-                return nil
-            }
-            if let plistVal = plistVal {
-                defer {
-                    safeFreePlist(plistVal)
-                }
-                let udid = getRustPlistString(plistVal)
-                verboseLog("[IdeviceGateway] fetchUDID() getRustPlistString returned UDID: \(String(describing: udid))")
-                return udid
-            }
-            debugLog("[IdeviceGateway] fetchUDID() plistVal is nil")
-            return nil
-        } else {
-            var conn: OpaquePointer? = nil
-            let err = idevice_usbmuxd_new_default_connection(0, &conn)
-            if let err = err {
-                let msg = self.getErrorMessage(from: err)
-                debugLog("[IdeviceGateway] fetchUDID new_default_connection failed: code=\(err.pointee.code), message=\(msg)")
-                idevice_error_free(err)
-                return nil
-            }
-            
-            if let conn = conn {
-                defer { idevice_usbmuxd_connection_free(conn) }
-                var devices: UnsafeMutablePointer<OpaquePointer?>? = nil
-                var count: Int32 = 0
-                let devErr = idevice_usbmuxd_get_devices(conn, &devices, &count)
-                if let devErr = devErr {
-                    let msg = self.getErrorMessage(from: devErr)
-                    debugLog("[IdeviceGateway] fetchUDID get_devices failed: code=\(devErr.pointee.code), message=\(msg)")
-                    idevice_error_free(devErr)
-                    return nil
-                }
-                
-                var udidResult: String? = nil
-                if count > 0, let devicesPtr = devices, let firstDev = devicesPtr.pointee {
-                    defer { idevice_usbmuxd_device_list_free(devices, count) }
-                    if let udidPtr = idevice_usbmuxd_device_get_udid(firstDev) {
-                        udidResult = String(cString: udidPtr)
-                        idevice_string_free(udidPtr)
-                    }
-                }
-                verboseLog("[IdeviceGateway] fetchUDID get_devices count: \(count), udid: \(udidResult ?? "nil")")
-                return udidResult
-            }
-            return nil
+
+        if let hwUdid = try syncGetLockdownValue(key: "UniqueDeviceID"), !hwUdid.isEmpty {
+            verboseLog("[IdeviceGateway] fetchUDID: retrieved live UDID: \(hwUdid)")
+            return hwUdid
         }
+        return nil
     }
 
     private func syncGetLockdownValue(key: String) throws -> String? {
