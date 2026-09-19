@@ -124,7 +124,7 @@ public enum PairingFileParser {
         guard let rawPlist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
             throw PairingError.invalidPlist("PropertyListSerialization failed")
         }
-        let plist = toSendableDictionary(rawPlist)
+        let plist = ConcurrencyUtils.toSendableDictionary(rawPlist)
         let mode = try validatePairingFile(from: plist)
         switch mode {
         case .rppairing:
@@ -134,18 +134,5 @@ public enum PairingFileParser {
         case .unknown:
             throw PairingError.invalidPlist("Unknown pairing file format")
         }
-    }
-
-    private static func toSendableDictionary(_ dict: [String: Any]) -> [String: any Sendable] {
-        var result: [String: any Sendable] = [:]
-        for (k, v) in dict {
-            if let s = v as? String { result[k] = s }
-            else if let d = v as? Data { result[k] = d }
-            else if let dt = v as? Date { result[k] = dt }
-            else if let n = v as? NSNumber { result[k] = n }
-            else if let b = v as? Bool { result[k] = b }
-            else if let subDict = v as? [String: Any] { result[k] = toSendableDictionary(subDict) }
-        }
-        return result
     }
 }
