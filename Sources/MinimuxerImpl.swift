@@ -200,10 +200,8 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             "started=\(self.proxyServer.isListening) "
         )
 
-        if activeProtocol != .rppairing {
-            guard self.proxyServer.isListening else {
-                return .failure(.muxerNotListening("Usbmuxd fake server is not listening"))
-            }
+        if self.gateway.requiresUsbmuxd && !self.proxyServer.isListening {
+            return .failure(.muxerNotListening("Usbmuxd fake server is not listening"))
         }
 
         if withDDIMountCheck {
@@ -244,7 +242,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         self.connectionManager.deviceProbeTimeout = timeoutMs
     }
     
-    func retargetUsbmuxdAddr() {
+    private func retargetUsbmuxdAddr() {
         verboseLog("[minimuxer] unsetenv(USBMUXD_SOCKET_ADDRESS)")
         unsetenv(MinimuxerConstants.usbmuxdEnvKey)
         verboseLog("[minimuxer] setenv(USBMUXD_SOCKET_ADDRESS, \(MinimuxerConstants.usbmuxdSocket))")
@@ -261,8 +259,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     
     
     private func restartMuxerServer() async throws {
-        guard self.gateway.pairingFileType != .rppairing else { return }
-        // restartMuxerServer only applies to the lockdown protocol path
+        guard self.gateway.requiresUsbmuxd else { return }
         guard let pairingDict = self.gateway.pairingDataDict else {
             debugLog("[minimuxer] ERROR: Pairing DICT missing...ignoring restart MuxerServer")
             throw MinimuxerError.pairingNotLoaded("Pairing dictionary is missing in gateway")
@@ -297,10 +294,12 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         try await matchingPriority {
             try await self.gateway.start(pairingFileContent: pairingFile)
         }
-        // retarget usbmuxd to our fake usbmuxd server (over network)
-        retargetUsbmuxdAddr()
-        // start our fake usbmuxd server for lockdown protocol based clients if required
-        try await restartMuxerServer()
+        if self.gateway.requiresUsbmuxd {
+            // retarget usbmuxd to our fake usbmuxd server (over network)
+            retargetUsbmuxdAddr()
+            // start our fake usbmuxd server for clients if required
+            try await restartMuxerServer()
+        }
         
         // mark ready!
         await state.with{
@@ -318,7 +317,9 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             return task
         }
         _ = await oldTask?.result       // await cancelled mount task completion
-        await self.proxyServer.stop()
+        if self.gateway.requiresUsbmuxd {
+            await self.proxyServer.stop()
+        }
         // mark ready!
         await state.with {
             $0.status = .stopped

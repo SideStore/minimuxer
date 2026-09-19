@@ -90,11 +90,13 @@ final internal class HeartbeatService {
     }
 
     private func heartbeatLoop() async {
-        while !self.proxyServer.isListening {
-            logIfNeeded("Waiting for usbmuxd to be ready...", isVerbose: true)
-            try? await Task.sleep(nanoseconds: sleepNs)
+        if self.gateway.requiresUsbmuxd {
+            while !self.proxyServer.isListening {
+                logIfNeeded("Waiting for usbmuxd to be ready...", isVerbose: true)
+                try? await Task.sleep(nanoseconds: sleepNs)
+            }
+            verboseLog("[minimuxer] heartbeat-task: usbmuxd is ready")
         }
-        verboseLog("[minimuxer] heartbeat-task: usbmuxd is ready")
 
         var currentInterval: UInt64 = MinimuxerConstants.heartbeatInterval
 

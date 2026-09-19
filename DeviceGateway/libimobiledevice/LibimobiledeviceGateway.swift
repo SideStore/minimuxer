@@ -74,6 +74,7 @@ private let kDefaultTimeoutMs: Int32 = 120000
 
 public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @unchecked Sendable {
     public static let shared = LibimobiledeviceGateway()
+    public let requiresUsbmuxd: Bool = true
 
     private var cachedUDID: String? = nil
     private var rpIdentity: rppairing_identity_t? = nil

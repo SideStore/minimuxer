@@ -35,6 +35,7 @@ extension String {
 
 public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @unchecked Sendable {
     public static let shared = IdeviceGateway()
+    public let requiresUsbmuxd: Bool = false
     var lastError: Error? = nil
 
     private func getRustPlistString(_ node: plist_t) -> String? {

@@ -24,6 +24,7 @@ public struct PairedDeviceRecord: Sendable {
 }
 
 public protocol DeviceGatewayAPI: AnyObject, Sendable {
+    var requiresUsbmuxd: Bool { get }
     var pairingFileType: PairingProtocol { get }
     var pairingFileData: Data? { get }
     var pairingDataDict: [String: any Sendable]? { get }
