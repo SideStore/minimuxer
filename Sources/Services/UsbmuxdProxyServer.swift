@@ -218,7 +218,7 @@ final internal class UsbmuxdProxyServer {
                     "Properties": [
                         "ConnectionType": "Network",                                    // using 'network' protocol of usbmuxd
                         "DeviceID": 1,                                                  // fake non-zero device id
-                        "EscapedFullServiceName": "\(udid)._apple-mobdev2._tcp.local",  // advert for mds discovery
+                        "EscapedFullServiceName": "\(udid)._apple-mobdev2._tcp.local",  // advert for mDNS discovery
                         "InterfaceIndex": 0,                                            // don't care
                         "NetworkAddress": convertIp(tunnelIfaceIp),                     // remote IP where device's lockdownd is accepting requests on
                         "SerialNumber": udid                                            // device UDID
