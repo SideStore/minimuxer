@@ -265,14 +265,15 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         var err: UnsafeMutablePointer<IdeviceFfiError>? = nil
 
         let rpPort = getPort(for: .rppairing)
-        verboseLog("[IdeviceGateway] ensureRPConnection() calling tunnel_create_rppairing with deviceEndpointIp: \(deviceEndpointIp):\(rpPort)")
+        verboseLog("[IdeviceGateway] ensureRPConnection() calling tunnel_create_rppairing_with_options with deviceEndpointIp: \(deviceEndpointIp):\(rpPort)")
         try hostname.withCString { hostPtr in
             try withSockaddr(ip: deviceEndpointIp, port: rpPort) { sockaddrPtr, sockaddrLen in
-                err = tunnel_create_rppairing(
+                err = tunnel_create_rppairing_with_options(
                     sockaddrPtr,
                     sockaddrLen,
                     hostPtr,
                     pairingFile,
+false,
                     nil,
                     nil,
                     &adapter,
@@ -308,9 +309,9 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
 
     private enum PairingErrorCode: Int32 {
         case invalidHostID = 18
-        case pairingDialogResponsePending = 30
-        case userDeniedPairing = 31
-        case passwordProtected = 32
+// case pairingDialogResponsePending = 30 // Interactive pairing setup error, not an existing pairing file issue
+        // case userDeniedPairing = 31            // Interactive pairing setup error, not an existing pairing file issue
+        // case passwordProtected = 32            // Device passcode locked, not an invalid pairing file
         case remotePairing = 103
     }
 
