@@ -82,7 +82,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
     private var activeTunnelInfo: rppairing_tunnel_info_t? = nil
     private var activeRsd: rppairing_rsd_t? = nil
 
-    private override init() {
+    public override init() {
         let sslOpts = UInt64(OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS | OPENSSL_INIT_ADD_ALL_CIPHERS | OPENSSL_INIT_ADD_ALL_DIGESTS)
         let sslRes = OpenSSLInitResult(code: OPENSSL_init_ssl(sslOpts, nil))
         let sslErrs = getOpenSSLErrors()

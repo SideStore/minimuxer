@@ -13,7 +13,10 @@ internal import DeviceGatewayAPI
 internal import MinimuxerCommon
 
 final internal class UsbmuxdProxyServer {
-    let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
 
     private var maxBufferLen: Int { MinimuxerConstants.usbmuxMaxPacketBufferLength }
     private var headerLen: Int { MinimuxerConstants.usbmuxHeaderLen }
@@ -29,8 +32,8 @@ final internal class UsbmuxdProxyServer {
     private var currentDeviceIp: String?
     private var currentEvent: String?
 
-    init(gateway: any DeviceGatewayAPI) {
-        self.gateway = gateway
+    init(deviceProvider: DeviceProvider) {
+        self.deviceProvider = deviceProvider
     }
 
     func notifyDeviceAttached(tunnelPeerIp: String) {

@@ -12,12 +12,15 @@ internal import DeviceGatewayAPI
 internal import MinimuxerCommon
 
 final internal class Mounter {
-    let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
     let proxyServer: UsbmuxdProxyServer
     let endpoint: DeviceEndpoint
 
-    init(gateway: any DeviceGatewayAPI, proxyServer: UsbmuxdProxyServer, endpoint: DeviceEndpoint) {
-        self.gateway = gateway
+    init(deviceProvider: DeviceProvider, proxyServer: UsbmuxdProxyServer, endpoint: DeviceEndpoint) {
+        self.deviceProvider = deviceProvider
         self.proxyServer = proxyServer
         self.endpoint = endpoint
     }

@@ -11,7 +11,10 @@ internal import MinimuxerCommon
 internal import DeviceGatewayAPI
 
 actor DeviceConnectionManager {
-    let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
 
     private var interfacesCache: Set<NetInfo> = []
     private var connectionConfigCache: ConnectionConfigBinding?
@@ -38,8 +41,8 @@ actor DeviceConnectionManager {
         set { lock.withLock { cachedDeviceProbeTimeout = newValue } }
     }
 
-    init(gateway: any DeviceGatewayAPI, deviceProbeTimeout: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs) {
-        self.gateway = gateway
+    init(deviceProvider: DeviceProvider, deviceProbeTimeout: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs) {
+        self.deviceProvider = deviceProvider
         self.cachedDeviceProbeTimeout = deviceProbeTimeout
     }
 

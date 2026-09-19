@@ -36,7 +36,7 @@ open class BaseDeviceGateway: @unchecked Sendable {
     public package(set) var isInitialized: Bool = false
     private var protocolPorts: [PairingProtocol: UInt16] = [:]
 
-    package init() throws {
+    public init() throws {
         if Self.self === BaseDeviceGateway.self {
             throw AbstractClassError.abstractInitializerInvoked
         }

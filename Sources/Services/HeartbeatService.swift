@@ -11,14 +11,17 @@ internal import MinimuxerCommon
 internal import DeviceGatewayAPI
 
 final internal class HeartbeatService {
-    let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
     let proxyServer: UsbmuxdProxyServer
     let endpoint: DeviceEndpoint
 
     private let sleepNs: UInt64 = MinimuxerConstants.heartbeatInterval * 1_000_000
 
-    init(gateway: any DeviceGatewayAPI, proxyServer: UsbmuxdProxyServer, endpoint: DeviceEndpoint) {
-        self.gateway = gateway
+    init(deviceProvider: DeviceProvider, proxyServer: UsbmuxdProxyServer, endpoint: DeviceEndpoint) {
+        self.deviceProvider = deviceProvider
         self.proxyServer = proxyServer
         self.endpoint = endpoint
     }

@@ -12,12 +12,15 @@ internal import DeviceGatewayAPI
 
 actor DeviceEndpoint {
 
-    let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
 
     private var ipAddr: String? = nil
 
-    init(gateway: any DeviceGatewayAPI) {
-        self.gateway = gateway
+    init(deviceProvider: DeviceProvider) {
+        self.deviceProvider = deviceProvider
     }
 
     func ip() throws -> String {

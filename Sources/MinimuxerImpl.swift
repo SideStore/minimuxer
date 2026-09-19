@@ -21,7 +21,10 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         statusSubject.eraseToAnyPublisher()
     }
 
-    let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
     let network: NetworkObserverService
     let emproxy: any EMProxyAPI
     let wirelessPair: any WirelessPairAPI
@@ -36,7 +39,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     init(
-        gateway: any DeviceGatewayAPI,
+        deviceProvider: DeviceProvider,
         network: NetworkObserverService,
         emproxy: any EMProxyAPI,
         wirelessPair: any WirelessPairAPI,
@@ -46,7 +49,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         connectionManager: DeviceConnectionManager,
         heartbeat: HeartbeatService
     ) {
-        self.gateway = gateway
+        self.deviceProvider = deviceProvider
         self.network = network
         self.emproxy = emproxy
         self.wirelessPair = wirelessPair

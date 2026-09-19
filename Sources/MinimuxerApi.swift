@@ -131,12 +131,30 @@ public extension MinimuxerAPI {
     }
 }
 
+public struct MinimuxerParams: Sendable {
+    public var backend: GatewayBackend?
+    public var remotePairingPort: UInt16?
+    public var deviceProbeTimeout: Int?
+
+    public init(
+        backend: GatewayBackend? = nil,
+        remotePairingPort: UInt16? = nil,
+        deviceProbeTimeout: Int? = nil
+    ) {
+        self.backend = backend
+        self.remotePairingPort = remotePairingPort
+        self.deviceProbeTimeout = deviceProbeTimeout
+    }
+}
+
 public protocol MinimuxerFacade: AnyObject, Sendable {
     var core: any MinimuxerAPI { get }
     var network: any NetworkObserverAPI { get }
     var wirelessPair: any WirelessPairAPI { get }
     var emproxy: any EMProxyAPI { get }
     var gateway: any DeviceGatewayAPI { get }
+    @discardableResult
+    func set(_ params: MinimuxerParams) -> any MinimuxerFacade
 }
 
 public enum GatewayBackend: String, Sendable, CaseIterable {
@@ -149,102 +167,98 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
     public let network: any NetworkObserverAPI
     public let wirelessPair: any WirelessPairAPI
     public let emproxy: any EMProxyAPI
-    public let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    public var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
+
+    // singleton
+    public static let shared: Minimuxer = {
+        createInstance(
+            backend: currentBackend,
+            deviceProbeTimeout: currentDeviceProbeTimeout,
+            remotePairingPort: currentRemotePairingPort
+        )
+    }()
 
     private static var currentDeviceProbeTimeout: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs
     private static var currentBackend: GatewayBackend = .idevice
     private static var currentRemotePairingPort: UInt16 = MinimuxerConstants.remotePairingPort
-    private static var cachedInstance: Minimuxer?
     private static let lock = NSLock()
 
     private init(
-        gateway: any DeviceGatewayAPI,
+        deviceProvider: DeviceProvider,
         network: any NetworkObserverAPI,
         emproxy: any EMProxyAPI,
         wirelessPair: any WirelessPairAPI,
         core: any MinimuxerAPI
     ) {
-        self.gateway = gateway
+        self.deviceProvider = deviceProvider
         self.network = network
         self.emproxy = emproxy
         self.wirelessPair = wirelessPair
         self.core = core
     }
 
-    public static func shared(
-        backend: GatewayBackend? = nil,
-        remotePairingPort: UInt16? = nil,
-        deviceProbeTimeout: Int? = nil
-    ) -> Minimuxer {
-        lock.lock()
-        defer { lock.unlock() }
+    @discardableResult
+    public func set(_ params: MinimuxerParams) -> any MinimuxerFacade {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
 
-        let resolvedBackend = backend ?? currentBackend
-        let resolvedPort = remotePairingPort ?? currentRemotePairingPort
-        let resolvedTimeout = deviceProbeTimeout ?? currentDeviceProbeTimeout
-
-        if let cached = cachedInstance,
-           currentBackend == resolvedBackend,
-           currentRemotePairingPort == resolvedPort,
-           currentDeviceProbeTimeout == resolvedTimeout 
-        {
-            return cached
+        if let newBackend = params.backend, newBackend != Self.currentBackend {
+            Self.currentBackend = newBackend
+            let newGateway = Self.makeGateway(for: newBackend)
+            newGateway.setPort(Self.currentRemotePairingPort, for: .rppairing)
+            self.deviceProvider.setGateway(newGateway)
         }
 
-        if let cached = cachedInstance, currentBackend == resolvedBackend {
-            currentRemotePairingPort = resolvedPort
-            currentDeviceProbeTimeout = resolvedTimeout
-            switch resolvedBackend {
-            case .libimobiledevice:
-                LibimobiledeviceGateway.shared.setPort(resolvedPort, for: .rppairing)
-            case .idevice:
-                IdeviceGateway.shared.setPort(resolvedPort, for: .rppairing)
-            }
-            cached.core.setDeviceProbeTimeout(resolvedTimeout)
-            return cached
+        if let newPort = params.remotePairingPort, newPort != Self.currentRemotePairingPort {
+            Self.currentRemotePairingPort = newPort
+            self.gateway.setPort(newPort, for: .rppairing)
         }
 
-        currentBackend = resolvedBackend
-        currentRemotePairingPort = resolvedPort
-        currentDeviceProbeTimeout = resolvedTimeout
-
-        switch resolvedBackend {
-        case .libimobiledevice:
-            LibimobiledeviceGateway.shared.setPort(resolvedPort, for: .rppairing)
-        case .idevice:
-            IdeviceGateway.shared.setPort(resolvedPort, for: .rppairing)
+        if let newTimeout = params.deviceProbeTimeout, newTimeout != Self.currentDeviceProbeTimeout {
+            Self.currentDeviceProbeTimeout = newTimeout
+            self.core.setDeviceProbeTimeout(newTimeout)
         }
 
-        let instance = createInstance(backend: resolvedBackend, deviceProbeTimeout: resolvedTimeout)
-        cachedInstance = instance
-        return instance
+        return self
     }
 
-    private static func createInstance(backend: GatewayBackend, deviceProbeTimeout: Int) -> Minimuxer {
-        let gateway: any DeviceGatewayAPI
+    private static func makeGateway(for backend: GatewayBackend) -> any DeviceGatewayAPI {
         switch backend {
-        case .libimobiledevice:
-            gateway = LibimobiledeviceGateway.shared
-        case .idevice:
-            gateway = IdeviceGateway.shared
+            case .libimobiledevice:
+                return LibimobiledeviceGateway()
+            case .idevice:
+                return IdeviceGateway()
         }
+    }
+
+    private static func createInstance(
+        backend: GatewayBackend,
+        deviceProbeTimeout: Int,
+        remotePairingPort: UInt16
+    ) -> Minimuxer {
+        let gateway = makeGateway(for: backend)
+        gateway.setPort(remotePairingPort, for: .rppairing)
+        let deviceProvider = DeviceProvider(gateway: gateway)
 
         let emproxy = EMProxyImpl()
-        let endpoint = DeviceEndpoint(gateway: gateway)
-        let proxyServer = UsbmuxdProxyServer(gateway: gateway)
-        let connectionManager = DeviceConnectionManager(gateway: gateway, deviceProbeTimeout: deviceProbeTimeout)
+        let endpoint = DeviceEndpoint(deviceProvider: deviceProvider)
+        let proxyServer = UsbmuxdProxyServer(deviceProvider: deviceProvider)
+        let connectionManager = DeviceConnectionManager(deviceProvider: deviceProvider, deviceProbeTimeout: deviceProbeTimeout)
         let network = NetworkObserverService(
             connectionManager: connectionManager,
             endpoint: endpoint,
             proxyServer: proxyServer
         )
 
-        let mounter = Mounter(gateway: gateway, proxyServer: proxyServer, endpoint: endpoint)
-        let heartbeat = HeartbeatService(gateway: gateway, proxyServer: proxyServer, endpoint: endpoint)
-        let wirelessPair = WirelessPairService(gateway: gateway)
+        let mounter = Mounter(deviceProvider: deviceProvider, proxyServer: proxyServer, endpoint: endpoint)
+        let heartbeat = HeartbeatService(deviceProvider: deviceProvider, proxyServer: proxyServer, endpoint: endpoint)
+        let wirelessPair = WirelessPairService(deviceProvider: deviceProvider)
 
         let impl = MinimuxerImpl(
-            gateway: gateway,
+            deviceProvider: deviceProvider,
             network: network,
             emproxy: emproxy,
             wirelessPair: wirelessPair,
@@ -256,7 +270,7 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
         )
 
         let instance = Minimuxer(
-            gateway: gateway,
+            deviceProvider: deviceProvider,
             network: network,
             emproxy: emproxy,
             wirelessPair: wirelessPair,

@@ -13,7 +13,10 @@ internal import DeviceGatewayAPI
 // MARK: - Wireless Pair API
 
 final internal class WirelessPairService: WirelessPairAPI {
-    let gateway: any DeviceGatewayAPI
+    let deviceProvider: DeviceProvider
+    var gateway: any DeviceGatewayAPI {
+        deviceProvider.gateway
+    }
     
     private var netService: NetService?
     
@@ -27,8 +30,8 @@ final internal class WirelessPairService: WirelessPairAPI {
     var onReadyToPair: ((String, Int) -> Void)?
     var onRequestPin: ((@escaping (String) -> Void) -> Void)?
     
-    init(gateway: any DeviceGatewayAPI) {
-        self.gateway = gateway
+    init(deviceProvider: DeviceProvider) {
+        self.deviceProvider = deviceProvider
     }
     
     func start(

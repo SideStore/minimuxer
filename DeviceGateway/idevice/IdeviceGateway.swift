@@ -76,7 +76,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     private var adapter: OpaquePointer? = nil
     private var handshake: OpaquePointer? = nil
 
-    private override init() {
+    public override init() {
         try! super.init()
     }
 

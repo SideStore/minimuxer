@@ -72,9 +72,9 @@ final class EMProxyTests: XCTestCase {
         listener.start(queue: .global())
         defer { listener.cancel() }
 
-        Minimuxer.shared().emproxy.setHandshakeClient(host: peerIp, port: testPort)
-        print("[EMProxyTests] Starting Minimuxer.shared().emproxy...")
-        try await Minimuxer.shared().emproxy.start()
+        Minimuxer.shared.emproxy.setHandshakeClient(host: peerIp, port: testPort)
+        print("[EMProxyTests] Starting Minimuxer.shared.emproxy...")
+        try await Minimuxer.shared.emproxy.start()
 
         print("[EMProxyTests] Using VPN peer IP: \(peerIp)")
 
@@ -103,8 +103,8 @@ final class EMProxyTests: XCTestCase {
         
         connection.cancel()
         
-        print("[EMProxyTests] Stopping Minimuxer.shared().emproxy...")
-        try await Minimuxer.shared().emproxy.stop()
+        print("[EMProxyTests] Stopping Minimuxer.shared.emproxy...")
+        try await Minimuxer.shared.emproxy.stop()
         print("[EMProxyTests] WireGuard device handshake test completed!")
     }
 
@@ -117,9 +117,9 @@ final class EMProxyTests: XCTestCase {
         let handshakePacket = handshakeState.packet
 
         print("[EMProxyTests] Configuring EMProxy handshake client (disabled)...")
-        Minimuxer.shared().emproxy.setHandshakeClient(host: "", port: 0, enabled: false)
-        print("[EMProxyTests] Starting Minimuxer.shared().emproxy for WireGuard handshake test...")
-        try await Minimuxer.shared().emproxy.start()
+        Minimuxer.shared.emproxy.setHandshakeClient(host: "", port: 0, enabled: false)
+        print("[EMProxyTests] Starting Minimuxer.shared.emproxy for WireGuard handshake test...")
+        try await Minimuxer.shared.emproxy.start()
 
         let testPort: UInt16 = 51820
         print("[EMProxyTests] Sending WireGuard handshake initiation packet to 127.0.0.1:\(testPort)...")
@@ -225,8 +225,8 @@ final class EMProxyTests: XCTestCase {
         try await Task.sleep(nanoseconds: 500_000_000)
         connection.cancel()
 
-        print("[EMProxyTests] Stopping Minimuxer.shared().emproxy...")
-        try await Minimuxer.shared().emproxy.stop()
+        print("[EMProxyTests] Stopping Minimuxer.shared.emproxy...")
+        try await Minimuxer.shared.emproxy.stop()
         print("[EMProxyTests] WireGuard handshake test completed!")
     }
 }
