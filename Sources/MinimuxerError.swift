@@ -125,3 +125,28 @@ public enum MinimuxerError: Error, Equatable, CustomStringConvertible, Localized
         return self.description
     }
 }
+
+extension DeviceGatewayError {
+    var isVPNDrop: Bool {
+        guard code == .connectionFailed || code == .serviceError else { return false }
+        let lower = reason.lowercased()
+        return lower.contains("broken pipe")        || lower.contains("brokenpipe")         ||
+               lower.contains("connection reset")   || lower.contains("connectionreset")    ||
+               lower.contains("early eof")          || lower.contains("unexpectedeof")      ||
+               lower.contains("no route to host")   || lower.contains("connection refused")
+    }
+
+    var isRetryable: Bool {
+        (code == .connectionFailed || code == .noConnection) && !isVPNDrop
+    }
+
+    func asMinimuxerError(protocol activeProtocol: PairingProtocol) throws -> MinimuxerError {
+        if code == .invalidPairingFile {
+            return .invalidPairing(protocol: activeProtocol, reason: reason)
+        }
+        if isVPNDrop {
+            return .invalidVPN(reason)
+        }
+        throw self
+    }
+}

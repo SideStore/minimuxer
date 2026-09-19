@@ -73,34 +73,13 @@ final internal class Mounter {
             do {
                 try await performMount(major: major, iosVersion: versionStr, dmgDocsPath: dmgDocsPath)
                 return true
-            } catch let error as MinimuxerError {
-                if case .noDevice = error {
-                    lastError = error
-                    verboseLog("[minimuxer] mounter: attempt \(attempt)/\(maxRetries) — no device, retrying...")
-                } else {
-                    throw error
-                }
             } catch let error as DeviceGatewayError {
-                switch error.code {
-                case .invalidPairingFile:
-                    debugLog("[minimuxer] mounter: ERROR: Invalid pairing file: \(error.reason)")
-                    throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: error.reason)
-                case .connectionFailed
-                    where error.reason.lowercased().contains("broken pipe") || error.reason.lowercased().contains("brokenpipe"):
-                    throw MinimuxerError.invalidVPN("VPN tunnel severed during mount. Cause: \(error.reason)")
-                case .connectionFailed, .noConnection:
+                if error.isRetryable {
                     lastError = error
                     verboseLog("[minimuxer] mounter: attempt \(attempt)/\(maxRetries) — connection failed, retrying...")
-                default:
-                    throw error
+                    continue
                 }
-            } catch {
-                let errStr = "\(error)"
-                if isPairingError(error, errStr) {
-                    debugLog("[minimuxer] mounter: ERROR: Invalid pairing file — device rejected handshake. Please redo pairing.")
-                    throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: "Device rejected pairing verify handshake: \(errStr). Please redo pairing.")
-                }
-                throw error
+                throw try error.asMinimuxerError(protocol: activeProtocol)
             }
 
             if attempt < maxRetries {
@@ -112,32 +91,12 @@ final internal class Mounter {
         throw lastError
     }
 
-    private func runIdevice<T>(_ description: String, body: () async throws -> T) async throws -> T {
-        do {
-            return try await body()
-        } catch {
-            debugLog("[minimuxer] mounter: \(description) failed: \(error)")
-            throw error
-        }
-    }
-
-    private func isPairingError(_ error: Error, _ errStr: String) -> Bool {
-        if let minErr = error as? MinimuxerError {
-            if case .invalidPairing = minErr {
-                return true
-            }
-        }
-        return errStr.contains("PairVerifyFailed")
-    }
-
     private func performMount(major: Int, iosVersion: String?, dmgDocsPath: String) async throws {
         if major < 17, let iosVersion {
             // Pre-17: lockdown only — load DMG + signature, mount via imagemounter
             let (dmgData, sigData) = try loadPre17Image(iosVersion: iosVersion, dmgDocsPath: dmgDocsPath)
             verboseLog("[minimuxer] Uploading and mounting image (dmg=\(dmgData.count) bytes, sig=\(sigData.count) bytes)...")
-            try await runIdevice("mountDeveloperImage") {
-                try await self.gateway.mountDeveloperImage(image: dmgData, signature: sigData)
-            }
+            try await self.gateway.mountDeveloperImage(image: dmgData, signature: sigData)
             verboseLog("[minimuxer] Successfully mounted the image")
         } else {
             // Post-17: both RP and lockdown use mountPersonalizedDdi.
@@ -149,9 +108,7 @@ final internal class Mounter {
                 "trustcache=\(trustcacheData.count) bytes, " +
                 "manifest=\(manifestData.count) bytes)"
             )
-            try await runIdevice("mountPersonalizedDdi") {
-                try await self.gateway.mountPersonalizedDdi(image: imageData, trustcache: trustcacheData, manifest: manifestData)
-            }
+            try await self.gateway.mountPersonalizedDdi(image: imageData, trustcache: trustcacheData, manifest: manifestData)
             verboseLog("[minimuxer] DDI mounted successfully")
         }
     }

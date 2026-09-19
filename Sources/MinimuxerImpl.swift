@@ -98,19 +98,10 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
     
     @discardableResult
-    private func checkDDIMountStatus() async throws(MinimuxerError) -> Bool {
-        let activeProtocol = self.gateway.pairingFileType
-        let ddiMounted = try await runIdeviceCheckingVPN("while checking DDI mount status") {
-            try await isDDIMounted()
-        }
-        guard ddiMounted else {
-            let msg = activeProtocol == .rppairing ? "dmg=\(ddiMounted) started=\(self.proxyServer.isListening)" : "DeveloperDiskImage is not mounted"
-            if activeProtocol == .rppairing {
-                verboseLog("minimuxer not ready (\(activeProtocol)): \(msg)")
-            }
-            throw MinimuxerError.mount(protocol: activeProtocol, reason: msg)
-        }
-        return true
+    private func checkDDIMountStatus() async throws -> Bool {
+        let isMounted = try await isDDIMounted()
+        verboseLog("minimuxer status (\(self.gateway.pairingFileType)): dmg=\(isMounted) started=\(self.proxyServer.isListening)")
+        return isMounted
     }
 
     func isReady(withNetworkCheck: Bool, withDDIMountCheck: Bool) async -> Result<Bool, MinimuxerError> {
