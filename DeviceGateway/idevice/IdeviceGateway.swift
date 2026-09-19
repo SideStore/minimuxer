@@ -645,10 +645,12 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         debugLog("[IdeviceGateway] fetchUDID() started, mode = .\(pairingFileType)")
         try verifyInitialized()
 
-        if let hwUdid = try syncGetLockdownValue(key: "UniqueDeviceID"), !hwUdid.isEmpty {
+        let hwUdid = try syncGetLockdownValue(key: "UniqueDeviceID")
+        if !hwUdid.isEmpty {
             verboseLog("[IdeviceGateway] fetchUDID: retrieved live UDID: \(hwUdid)")
             return hwUdid
         }
+        debugLog("[IdeviceGateway] fetchUDID: UniqueDeviceID retrieved is empty")
         throw IdeviceGatewayError(.serviceError, reason: "UniqueDeviceID not found on device")
     }
 

@@ -400,7 +400,8 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
     func syncFetchUDID() throws -> String {
         try verifyInitialized()
         do {
-            if let hwUdid = try syncGetLockdownValue(key: "UniqueDeviceID"), !hwUdid.isEmpty {
+            let hwUdid = try syncGetLockdownValue(key: "UniqueDeviceID")
+            if !hwUdid.isEmpty {
                 debugLog("[LibimobiledeviceGateway] syncFetchUDID: retrieved hardware UDID: \(hwUdid)")
                 self.cachedUDID = hwUdid
                 return hwUdid
@@ -414,32 +415,38 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
         throw LibimobiledeviceGatewayError(.serviceError, reason: "UniqueDeviceID not found on device")
     }
 
-    func syncGetLockdownValue(key: String) throws -> String? {
+    func syncGetLockdownValue(key: String) throws -> String {
         if pairingFileType == .rppairing {
             return try withRSDService(.lockdownd) { stream in
                 try rsdSendPlist(stream, dict: ["Label": "SideStore", "Request": "GetValue", "Key": key])
                 let resp = try rsdRecvPlist(stream)
                 debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) response: \(resp)")
-                return resp["Value"] as? String
+                guard let val = resp["Value"] as? String else {
+                    debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) Value missing or invalid: \(resp)")
+                    throw LibimobiledeviceGatewayError(.serviceError, reason: "Lockdown value for key '\(key)' is missing or invalid")
+                }
+                return val
             }
         }
 
-        return try withLockdown { (_, client) -> String? in
+        return try withLockdown { (_, client) -> String in
             var valNode: plist_t? = nil
             let err = lockdownd_get_value(client, nil, key, &valNode)
             guard err == LOCKDOWN_E_SUCCESS, let valNode = valNode else {
-                return nil
+                debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) lockdownd_get_value failed with code \(err.rawValue)")
+                throw LibimobiledeviceGatewayError(.serviceError, reason: "Failed to get lockdown value for key '\(key)': code \(err.rawValue)")
             }
             defer { plist_free(valNode) }
 
             var valPtr: UnsafeMutablePointer<CChar>? = nil
             plist_get_string_val(valNode, &valPtr)
-            if let valPtr = valPtr {
-                let val = String(cString: valPtr)
-                free(valPtr)
-                return val
+            guard let valPtr = valPtr else {
+                debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) plist string pointer is nil")
+                throw LibimobiledeviceGatewayError(.serviceError, reason: "Lockdown value for key '\(key)' could not be decoded as string")
             }
-            return nil
+            let val = String(cString: valPtr)
+            free(valPtr)
+            return val
         }
     }
 
@@ -1395,7 +1402,7 @@ extension LibimobiledeviceGateway {
         }
     }
 
-    public func getLockdownValue(key: String) async throws -> String? {
+    public func getLockdownValue(key: String) async throws -> String {
         try await withFFIDispatch {
             try self.syncGetLockdownValue(key: key)
         }

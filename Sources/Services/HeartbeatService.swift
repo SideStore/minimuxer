@@ -50,7 +50,7 @@ final internal class HeartbeatService {
 
     var lastBeatSuccessful = false
 
-    /// Start the heartbeat loop. Safe to call multiple times — ignored if a task is already active.
+    // Start the heartbeat loop. ignored if a task is already active.
     func start() async {
         guard await state.tryStart() else {
             return
@@ -69,7 +69,7 @@ final internal class HeartbeatService {
         }
     }
 
-    /// Signal the heartbeat task to stop. The task will exit on next iteration.
+    // Signal the heartbeat task to stop. will exit on next iteration.
     func stop() async {
         await state.stop()
         lastBeatSuccessful = false

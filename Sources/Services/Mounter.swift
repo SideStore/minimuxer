@@ -45,7 +45,7 @@ final internal class Mounter {
         // For lockdown path, fetch iOS version to dispatch pre-17 vs post-17
         var major = 17
         var versionStr: String? = nil
-        if gateway.pairingFileType != .rppairing {
+        if gateway.pairingFileType == .lockdown {
             let v = try await self.gateway.getLockdownValue(key: "ProductVersion")
             guard let firstComponent = v.split(separator: ".").first,
                   let parsedMajor = Int(firstComponent) else 
