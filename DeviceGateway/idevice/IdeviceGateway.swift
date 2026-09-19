@@ -652,7 +652,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         throw IdeviceGatewayError(.serviceError, reason: "UniqueDeviceID not found on device")
     }
 
-    private func syncGetLockdownValue(key: String) throws -> String? {
+    private func syncGetLockdownValue(key: String) throws -> String {
         debugLog("[IdeviceGateway] getLockdownValue(key: \(key)) started, mode = .\(pairingFileType)")
         try verifyInitialized()
 
@@ -702,16 +702,19 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
                     throw IdeviceGatewayError(.serviceError, reason: "Failed to get lockdown value for key \(key), error: (\(msg))")
                 }
             }
-            if let plistVal = plistVal {
-                defer {
-                    safeFreePlist(plistVal)
-                }
-                let val = getRustPlistString(plistVal)
-                verboseLog("[IdeviceGateway] getLockdownValue getRustPlistString returned: \(String(describing: val))")
-                return val
+            guard let plistVal = plistVal else {
+                debugLog("[IdeviceGateway] getLockdownValue plistVal is nil for \(key)")
+                throw IdeviceGatewayError(.serviceError, reason: "Lockdown value for key '\(key)' is missing")
             }
-            debugLog("[IdeviceGateway] getLockdownValue plistVal is nil for \(key)")
-            return nil
+            defer {
+                safeFreePlist(plistVal)
+            }
+            guard let val = getRustPlistString(plistVal) else {
+                debugLog("[IdeviceGateway] getLockdownValue failed to parse plist string for \(key)")
+                throw IdeviceGatewayError(.serviceError, reason: "Lockdown value for key '\(key)' could not be decoded as string")
+            }
+            verboseLog("[IdeviceGateway] getLockdownValue returned: \(val)")
+            return val
         }
     }
 
@@ -2305,7 +2308,7 @@ extension IdeviceGateway {
         }
     }
 
-    public func getLockdownValue(key: String) async throws -> String? {
+    public func getLockdownValue(key: String) async throws -> String {
         try await withFFIDispatch {
             try self.syncGetLockdownValue(key: key)
         }

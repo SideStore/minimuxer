@@ -46,9 +46,7 @@ final internal class Mounter {
             throw MinimuxerError.noDevice("Reachable device IP not found")
         }
 
-        let isDDIMounted = try await runIdevice("isDDIMounted") {
-            try await self.gateway.isDDIMounted()
-        }
+        let isDDIMounted = try await self.gateway.isDDIMounted()
         if isDDIMounted {
             verboseLog("[minimuxer] mounter: DeveloperDiskImage is already mounted. Bypassing mount.")
             return false
@@ -58,12 +56,7 @@ final internal class Mounter {
         var major = 17
         var versionStr: String? = nil
         if activeProtocol != .rppairing {
-            guard let v = try await runIdevice("getLockdownValue(ProductVersion)", body: {
-                try await self.gateway.getLockdownValue(key: "ProductVersion")
-            }) else {
-                debugLog("[minimuxer] mounter: could not get device version")
-                throw MinimuxerError.noDevice("ProductVersion not found in lockdown")
-            }
+            let v = try await self.gateway.getLockdownValue(key: "ProductVersion")
             versionStr = v
             major = Int(v.split(separator: ".").first ?? "0") ?? 0
         }

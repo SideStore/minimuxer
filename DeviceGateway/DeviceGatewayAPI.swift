@@ -37,7 +37,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
     func getPairingFileType() -> PairingProtocol
 
     func fetchUDID() async throws -> String
-    func getLockdownValue(key: String) async throws -> String?
+    func getLockdownValue(key: String) async throws -> String
 
     func isDDIMounted() async throws -> Bool
     func mountDeveloperImage(image: Data, signature: Data) async throws
