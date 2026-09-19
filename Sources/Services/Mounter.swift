@@ -22,23 +22,13 @@ final internal class Mounter {
         self.endpoint = endpoint
     }
 
-    // NOTE: mounter doesn't cache the mount status nor the minimuxer.
-    //       reason is that the actual device state responded by idevice should be truthiness
     @discardableResult
-    @concurrent func mount(docsPath: String, maxRetries: Int = 3) async throws -> Bool {
+    @concurrent func mount(docsPath: String) async throws -> Bool {
 
         let path = docsPath.hasPrefix("file://") ? String(docsPath.dropFirst(7)) : docsPath
         let dmgDocsPath = (path.hasSuffix("/") ? String(path.dropLast()) : path) + "/DMG"
         try? FileManager.default.createDirectory(atPath: dmgDocsPath, withIntermediateDirectories: true)
 
-        let activeProtocol = self.gateway.pairingFileType
-        // Prerequisite: usbmuxd must be up (RP pairing connects via RSD, skips muxer)
-        if activeProtocol != .rppairing {
-            guard self.proxyServer.isListening else {
-                debugLog("[minimuxer] mounter: usbmuxd not ready!")
-                throw MinimuxerError.noConnection("Usbmuxd fake server is not listening")
-            }
-        }
 
         // Prerequisite: device must be reachable
         guard (try? await self.endpoint.ip()) != nil else {
@@ -55,33 +45,20 @@ final internal class Mounter {
         // For lockdown path, fetch iOS version to dispatch pre-17 vs post-17
         var major = 17
         var versionStr: String? = nil
-        if activeProtocol != .rppairing {
+        if gateway.pairingFileType != .rppairing {
             let v = try await self.gateway.getLockdownValue(key: "ProductVersion")
+            guard let firstComponent = v.split(separator: ".").first,
+                  let parsedMajor = Int(firstComponent) else 
+            {
+                debugLog("[minimuxer] mounter: failed to parse major iOS version from ProductVersion '\(v)'")
+                throw MinimuxerError.invalidProductVersion(v)
+            }
             versionStr = v
-            major = Int(v.split(separator: ".").first ?? "0") ?? 0
+            major = parsedMajor
         }
 
-        var lastError: Error = MinimuxerError.mount(protocol: activeProtocol, reason: "Initial mount state")
-        for attempt in 1...max(1, maxRetries) {
-            do {
-                try await performMount(major: major, iosVersion: versionStr, dmgDocsPath: dmgDocsPath)
-                return true
-            } catch let error as DeviceGatewayError {
-                if error.isRetryable {
-                    lastError = error
-                    verboseLog("[minimuxer] mounter: attempt \(attempt)/\(maxRetries) — connection failed, retrying...")
-                    continue
-                }
-                throw try error.asMinimuxerError(protocol: activeProtocol)
-            }
-
-            if attempt < maxRetries {
-                try? await Task.sleep(nanoseconds: MinimuxerConstants.mounterSleepNs)
-            }
-        }
-
-        debugLog("[minimuxer] mounter: all \(maxRetries) attempt(s) exhausted")
-        throw lastError
+        try await performMount(major: major, iosVersion: versionStr, dmgDocsPath: dmgDocsPath)
+        return true
     }
 
     private func performMount(major: Int, iosVersion: String?, dmgDocsPath: String) async throws {
@@ -106,90 +83,88 @@ final internal class Mounter {
         }
     }
 
-    private func loadPre17Image(iosVersion: String, dmgDocsPath: String) throws -> (Data, Data) {
-        let dmgPath = "\(dmgDocsPath)/\(iosVersion).dmg"
-        let sigPath = "\(dmgPath).signature"
-        verboseLog("[minimuxer] Pre17 DMG: \(dmgPath)")
-        verboseLog("[minimuxer] Pre17 Signature: \(sigPath)")
+    private func getOrDownload(url: URL, localURL: URL) throws -> Data {
+        if FileManager.default.fileExists(atPath: localURL.path) {
+            return try Data(contentsOf: localURL)
+        }
+        verboseLog("[minimuxer] Downloading \(localURL.lastPathComponent)...")
+        guard let data = try? Data(contentsOf: url) else {
+            debugLog("[minimuxer] ERROR: Failed to download \(localURL.lastPathComponent)")
+            throw MinimuxerError.downloadImage("Failed to download file from \(url.absoluteString)")
+        }
+        try data.write(to: localURL)
+        return data
+    }
 
-        if !FileManager.default.fileExists(atPath: dmgPath) {
+    private func loadPre17Image(iosVersion: String, dmgDocsPath: String) throws -> (Data, Data) {
+        let dmgURL = URL(fileURLWithPath: "\(dmgDocsPath)/\(iosVersion).dmg")
+        let sigURL = URL(fileURLWithPath: "\(dmgDocsPath)/\(iosVersion).dmg.signature")
+        verboseLog("[minimuxer] Pre17 DMG: \(dmgURL.path)")
+        verboseLog("[minimuxer] Pre17 Signature: \(sigURL.path)")
+
+        if !FileManager.default.fileExists(atPath: dmgURL.path) || !FileManager.default.fileExists(atPath: sigURL.path) {
             verboseLog("[minimuxer] Downloading iOS \(iosVersion) DMG...")
             guard let url = URL(string: MinimuxerConstants.pre17VersionsURL),
                   let data = try? Data(contentsOf: url),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: String],
                   let dmgUrlStr = json[iosVersion],
-                  let dmgUrl = URL(string: dmgUrlStr) else {
+                  let dmgUrl = URL(string: dmgUrlStr) else 
+            {
                 debugLog("[minimuxer] ERROR: Unable to download DMG dictionary or find version")
                 throw MinimuxerError.downloadImage("Failed to retrieve pre-17 versions plist or find iOS \(iosVersion) DMG URL")
             }
 
-            let zipData = try Data(contentsOf: dmgUrl)
-            let zipPath = "\(dmgDocsPath)/dmg.zip"
-            try zipData.write(to: URL(fileURLWithPath: zipPath))
+            let zipURL = URL(fileURLWithPath: "\(dmgDocsPath)/dmg.zip")
+            let tmpURL = URL(fileURLWithPath: "\(dmgDocsPath)/tmp")
+            defer {
+                try? FileManager.default.removeItem(at: zipURL)
+                try? FileManager.default.removeItem(at: tmpURL)
+            }
 
-            let tmpPath = "\(dmgDocsPath)/tmp"
-            try? FileManager.default.removeItem(atPath: tmpPath)
-            try FileManager.default.createDirectory(atPath: tmpPath, withIntermediateDirectories: true)
+            try Data(contentsOf: dmgUrl).write(to: zipURL)
+            try? FileManager.default.removeItem(at: tmpURL)
+            try FileManager.default.createDirectory(at: tmpURL, withIntermediateDirectories: true)
+            try FileManager.default.unzipItem(at: zipURL, to: tmpURL)
 
-            let tmpPathURL = URL(fileURLWithPath: tmpPath)
-            try FileManager.default.unzipItem(at: URL(fileURLWithPath: zipPath), to: tmpPathURL)
-            try? FileManager.default.removeItem(atPath: zipPath)
-
-            for item in try FileManager.default.contentsOfDirectory(atPath: tmpPath) {
-                let itemPath = "\(tmpPath)/\(item)"
-                var isDir: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: itemPath, isDirectory: &isDir), isDir.boolValue,
-                      !item.contains("__MACOSX") else { continue }
-                let dmgFile = "\(itemPath)/DeveloperDiskImage.dmg"
-                let sigFile = "\(itemPath)/DeveloperDiskImage.dmg.signature"
-                if FileManager.default.fileExists(atPath: dmgFile) {
-                    try FileManager.default.moveItem(atPath: dmgFile, toPath: "\(dmgDocsPath)/\(iosVersion).dmg")
-                    try FileManager.default.moveItem(atPath: sigFile, toPath: "\(dmgDocsPath)/\(iosVersion).dmg.signature")
+            for item in try FileManager.default.contentsOfDirectory(atPath: tmpURL.path) {
+                let itemURL = tmpURL.appendingPathComponent(item)
+                let isDirectory = (try? itemURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                guard isDirectory, !item.contains("__MACOSX") else { continue }
+                let dmgFile = itemURL.appendingPathComponent("DeveloperDiskImage.dmg")
+                let sigFile = itemURL.appendingPathComponent("DeveloperDiskImage.dmg.signature")
+                if FileManager.default.fileExists(atPath: dmgFile.path) 
+                {
+                    try? FileManager.default.removeItem(at: dmgURL)
+                    try? FileManager.default.removeItem(at: sigURL)
+                    try FileManager.default.moveItem(at: dmgFile, to: dmgURL)
+                    try FileManager.default.moveItem(at: sigFile, to: sigURL)
                 }
             }
-            try? FileManager.default.removeItem(atPath: tmpPath)
         }
 
         verboseLog("[minimuxer] Reading pre-17 image files into memory")
-        guard let dmgData = try? Data(contentsOf: URL(fileURLWithPath: dmgPath)),
-              let sigData = try? Data(contentsOf: URL(fileURLWithPath: sigPath)) else {
+        guard let dmgData = try? Data(contentsOf: dmgURL),
+              let sigData = try? Data(contentsOf: sigURL) else 
+        {
             debugLog("[minimuxer] ERROR: Unable to read developer disk image or signature files")
-            throw MinimuxerError.mount(protocol: .lockdown, reason: "Unable to read pre-17 image files at: \(dmgPath)")
+            throw MinimuxerError.mount(protocol: .lockdown, reason: "Unable to read pre-17 image files at: \(dmgURL.path)")
         }
         return (dmgData, sigData)
     }
 
     private func loadPost17Image(dmgDocsPath: String) throws -> (Data, Data, Data) {
         let dir = URL(fileURLWithPath: dmgDocsPath)
-        let tasks: [(String, URL)] = [
-            (MinimuxerConstants.ddiImageURL,      dir.appendingPathComponent("Image.dmg")),
-            (MinimuxerConstants.ddiTrustcacheURL, dir.appendingPathComponent("Image.dmg.trustcache")),
-            (MinimuxerConstants.ddiManifestURL,   dir.appendingPathComponent("BuildManifest.plist"))
-        ]
-
-        for (urlStr, path) in tasks {
-            if !FileManager.default.fileExists(atPath: path.path) {
-                verboseLog("[minimuxer] Downloading \(path.lastPathComponent)...")
-                guard let url = URL(string: urlStr), let data = try? Data(contentsOf: url) else {
-                    debugLog("[minimuxer] ERROR: Failed to download \(path.lastPathComponent)")
-                    throw MinimuxerError.downloadImage("Failed to download post-17 file from \(urlStr)")
-                }
-                try data.write(to: path)
-            }
+        guard let imgURL = URL(string: MinimuxerConstants.ddiImageURL),
+              let tcURL = URL(string: MinimuxerConstants.ddiTrustcacheURL),
+              let mftURL = URL(string: MinimuxerConstants.ddiManifestURL) else 
+        {
+            debugLog("[minimuxer] ERROR: Invalid post-17 DDI URLs configured")
+            throw MinimuxerError.downloadImage("Invalid post-17 DDI URLs configured")
         }
-        verboseLog("[minimuxer] Files downloaded, reading to memory")
 
-        let imageURL      = tasks[0].1
-        let trustcacheURL = tasks[1].1
-        let manifestURL   = tasks[2].1
-
-        verboseLog("[minimuxer] Image:      \(imageURL.path)")
-        verboseLog("[minimuxer] Trustcache: \(trustcacheURL.path)")
-        verboseLog("[minimuxer] Manifest:   \(manifestURL.path)")
-
-        let imageData      = try Data(contentsOf: imageURL)
-        let trustcacheData = try Data(contentsOf: trustcacheURL)
-        let manifestData   = try Data(contentsOf: manifestURL)
+        let imageData = try getOrDownload(url: imgURL, localURL: dir.appendingPathComponent("Image.dmg"))
+        let trustcacheData = try getOrDownload(url: tcURL, localURL: dir.appendingPathComponent("Image.dmg.trustcache"))
+        let manifestData = try getOrDownload(url: mftURL, localURL: dir.appendingPathComponent("BuildManifest.plist"))
 
         return (imageData, trustcacheData, manifestData)
     }
