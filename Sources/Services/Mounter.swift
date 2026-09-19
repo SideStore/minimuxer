@@ -82,10 +82,12 @@ final internal class Mounter {
                 }
             } catch let error as DeviceGatewayError {
                 switch error.code {
+                case .invalidPairingFile:
+                    debugLog("[minimuxer] mounter: ERROR: Invalid pairing file: \(error.reason)")
+                    throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: error.reason)
                 case .connectionFailed
                     where error.reason.lowercased().contains("broken pipe") || error.reason.lowercased().contains("brokenpipe"):
-                    // VPN tunnel was severed — translate immediately, no retry useful
-                    throw MinimuxerError.noVPN("VPN tunnel severed during mount. Cause: \(error.reason)")
+                    throw MinimuxerError.invalidVPN("VPN tunnel severed during mount. Cause: \(error.reason)")
                 case .connectionFailed, .noConnection:
                     lastError = error
                     verboseLog("[minimuxer] mounter: attempt \(attempt)/\(maxRetries) — connection failed, retrying...")
@@ -126,8 +128,6 @@ final internal class Mounter {
             }
         }
         return errStr.contains("PairVerifyFailed")
-            || errStr.contains("Connection reset by peer")
-            || errStr.contains("ConnectionReset")
     }
 
     private func performMount(major: Int, iosVersion: String?, dmgDocsPath: String) async throws {

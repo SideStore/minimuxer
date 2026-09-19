@@ -100,7 +100,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     @discardableResult
     private func checkDDIMountStatus() async throws(MinimuxerError) -> Bool {
         let activeProtocol = self.gateway.pairingFileType
-        let ddiMounted = try await runIdeviceCheckingVPN("while checking DDI mount status", fallback: false) {
+        let ddiMounted = try await runIdeviceCheckingVPN("while checking DDI mount status") {
             try await isDDIMounted()
         }
         guard ddiMounted else {
@@ -203,9 +203,9 @@ final internal class MinimuxerImpl: MinimuxerAPI {
 
         let activeProtocol = self.gateway.pairingFileType
 
-        let deviceUDID: String?
+        let deviceUDID: String
         do {
-            deviceUDID = try await runIdeviceCheckingVPN("while fetching device UDID", fallback: nil) {
+            deviceUDID = try await runIdeviceCheckingVPN("while fetching device UDID") {
                 try await fetchUDID()
             }
         } catch {
@@ -214,12 +214,9 @@ final internal class MinimuxerImpl: MinimuxerAPI {
 
         verboseLog(
             "minimuxer status (.\(activeProtocol)): " +
-            "deviceUDID=\(deviceUDID ?? "nil") " +
+            "deviceUDID=\(deviceUDID) " +
             "started=\(self.proxyServer.isListening) "
         )
-        guard deviceUDID != nil else {
-            return .failure(.invalidPairing(protocol: activeProtocol, reason: ".\(activeProtocol) UDID not found"))
-        }
 
         if activeProtocol != .rppairing {
             guard self.proxyServer.isListening else {
@@ -243,10 +240,13 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         return .success(true)
     } 
 
-    private func runIdeviceCheckingVPN<T>(_ context: String, fallback: T, action: () async throws -> T) async throws(MinimuxerError) -> T {
+    private func runIdeviceCheckingVPN<T>(_ context: String, action: () async throws -> T) async throws -> T {
         do {
             return try await action()
         } catch let err as DeviceGatewayError {
+            if err.code == .invalidPairingFile {
+                throw MinimuxerError.invalidPairing(protocol: self.gateway.pairingFileType, reason: err.reason)
+            }
             let lower = err.reason.lowercased()
             if (err.code == .connectionFailed || err.code == .serviceError),
                lower.contains("broken pipe")        || lower.contains("brokenpipe")         ||
@@ -254,11 +254,9 @@ final internal class MinimuxerImpl: MinimuxerAPI {
                lower.contains("early eof")          || lower.contains("unexpectedeof")      ||
                lower.contains("no route to host")   || lower.contains("connection refused")
             {
-                throw MinimuxerError.noVPN("VPN tunnel connection severed \(context). Cause: \(err.reason)")
+                throw MinimuxerError.invalidVPN("VPN tunnel connection terminated \(context). Cause: \(err.reason)")
             }
-            return fallback
-        } catch {
-            return fallback
+            throw err
         }
     }
 
@@ -296,13 +294,13 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         // restartMuxerServer only applies to the lockdown protocol path
         guard let pairingDict = self.gateway.pairingDataDict else {
             debugLog("[minimuxer] ERROR: Pairing DICT missing...ignoring restart MuxerServer")
-            throw MinimuxerError.invalidPairing(protocol: .lockdown, reason: "Pairing dictionary is missing in gateway")
+            throw MinimuxerError.pairingNotLoaded("Pairing dictionary is missing in gateway")
         }
         verboseLog("[minimuxer] loaded pairing file keys: \(pairingDict.keys)")
 
         guard let deviceUDID = pairingDict["UDID"] as? String else {
             debugLog("[minimuxer] ERROR: Pairing file missing UDID")
-            throw MinimuxerError.invalidPairing(protocol: .lockdown, reason: "Pairing file is missing UDID value")
+            throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: "Pairing file is missing UDID value")
         }
 
         // restart muxer
@@ -427,7 +425,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
     }
 
-    func fetchUDID() async throws -> String? {
+    func fetchUDID() async throws -> String {
         try await matchingPriority{
             try await self.gateway.fetchUDID()
         }
