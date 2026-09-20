@@ -144,7 +144,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         super.setLogging(enabled)
     }
 
-    private func syncStart(pairingFileContent: String) throws {
+    private func syncStart(pairingFileContent: String, preferred: PairingProtocol?) throws {
         debugLog("[IdeviceGateway] start() called, pairingFileContent length: \(pairingFileContent.count)")
         cleanup()
         
@@ -154,7 +154,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
 
         let parsedPairingFile: any PairingFile
         do {
-            parsedPairingFile = try PairingFileParser.parse(content: pairingFileContent)
+            parsedPairingFile = try PairingFileParser.parse(content: pairingFileContent, preferred: preferred)
             setPairingFileData(parsedPairingFile.rawData)
             setPairingFileType(parsedPairingFile.mode)
         } catch {
@@ -2299,9 +2299,9 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
 
 // Async FFI Dispatcher Extensions
 extension IdeviceGateway {
-    public func start(pairingFileContent: String) async throws {
+    public func start(pairingFileContent: String, preferred: PairingProtocol?) async throws {
         try await withFFIDispatch {
-            try self.syncStart(pairingFileContent: pairingFileContent)
+            try self.syncStart(pairingFileContent: pairingFileContent, preferred: preferred)
         }
     }
 

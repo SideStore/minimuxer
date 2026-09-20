@@ -368,11 +368,11 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
         }
     }
 
-    func syncStart(pairingFileContent: String) throws {
+    func syncStart(pairingFileContent: String, preferred: PairingProtocol?) throws {
         debugLog("[LibimobiledeviceGateway] start() called")
         cleanup()
 
-        let pairingFile = try PairingFileParser.parse(content: pairingFileContent)
+        let pairingFile = try PairingFileParser.parse(content: pairingFileContent, preferred: preferred)
         setPairingFileData(pairingFile.rawData)
         setPairingFileType(pairingFile.mode)
 
@@ -1394,9 +1394,9 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
 
 // Async FFI Dispatcher Extensions
 extension LibimobiledeviceGateway {
-    public func start(pairingFileContent: String) async throws {
+    public func start(pairingFileContent: String, preferred: PairingProtocol?) async throws {
         try await withFFIDispatch {
-            try self.syncStart(pairingFileContent: pairingFileContent)
+            try self.syncStart(pairingFileContent: pairingFileContent, preferred: preferred)
         }
     }
 

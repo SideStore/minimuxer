@@ -284,7 +284,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     
     
     
-    func start(pairingFile: String, mountPath: String) async throws(MinimuxerError) {
+    func start(pairingFile: String, mountPath: String, preferred: PairingProtocol?) async throws(MinimuxerError) {
         let connectionMode = await getConnectionMode()
         if DeviceConnectionMode.notConfigured == connectionMode {
             throw connectionNotConfiguredError()
@@ -298,7 +298,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
         // let idevice initialize its state
         try await runWithChecks("while starting gateway", catchAll: { .invalidPairing(protocol: self.activeProtocol, reason: $0) }) {
-            try await self.gateway.start(pairingFileContent: pairingFile)
+            try await self.gateway.start(pairingFileContent: pairingFile, preferred: preferred)
         }
         if self.gateway.requiresUsbmuxd {
             // retarget usbmuxd to our fake usbmuxd server (over network)

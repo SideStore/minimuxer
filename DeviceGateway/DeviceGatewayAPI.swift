@@ -32,7 +32,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
     func getPort(for protocolType: PairingProtocol) -> UInt16
     func setPort(_ port: UInt16, for protocolType: PairingProtocol)
 
-    func start(pairingFileContent: String) async throws
+    func start(pairingFileContent: String, preferred: PairingProtocol?) async throws
     func setDeviceEndpointIp(_ ip: String?)
     func setLogging(_ enabled: Bool)
 
@@ -83,6 +83,10 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
 }
 
 public extension DeviceGatewayAPI {
+    func start(pairingFileContent: String, preferred: PairingProtocol? = nil) async throws {
+        try await start(pairingFileContent: pairingFileContent, preferred: preferred)
+    }
+
     // Active service port for the currently loaded pairing file mode
     var servicePort: UInt16 {
         getPort(for: pairingFileType)

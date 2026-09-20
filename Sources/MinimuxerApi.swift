@@ -99,7 +99,7 @@ public protocol MinimuxerAPI: AnyObject {
     func setLogging(_ enabled: Bool)
     func setDeviceProbeTimeout(_ timeoutMs: Int)
 
-    func start(pairingFile: String, mountPath: String) async throws
+    func start(pairingFile: String, mountPath: String, preferred: PairingProtocol?) async throws
     func stop() async throws
     func restart() async throws
     func reinitializePairingData(pairingFile: String) async throws
@@ -127,6 +127,10 @@ public protocol MinimuxerAPI: AnyObject {
 }
 
 public extension MinimuxerAPI {
+    func start(pairingFile: String, mountPath: String, preferred: PairingProtocol? = nil) async throws {
+        try await start(pairingFile: pairingFile, mountPath: mountPath, preferred: preferred)
+    }
+    
     func isReady(withNetworkCheck: Bool = true, withDDIMountCheck: Bool = false) async -> Result<Bool, MinimuxerError> {
         await isReady(withNetworkCheck: withNetworkCheck, withDDIMountCheck: withDDIMountCheck)
     }
