@@ -72,6 +72,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         var status: MinimuxerStatus = .stopped
         var mountTask: Task<Bool, Error>? = nil
         var lastDocsPath: String? = nil
+        var preferredProtocol: PairingProtocol? = nil
         
         func with<T>(_ body: (isolated State) throws -> T) rethrows -> T {
             try body(self)
@@ -295,6 +296,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         await state.with{
             $0.status = .inprogress     // mark inprogress
             $0.lastDocsPath = mountPath // record the mountPath
+            $0.preferredProtocol = preferred
         }
         // let idevice initialize its state
         try await runWithChecks("while starting gateway", catchAll: { .invalidPairing(protocol: self.activeProtocol, reason: $0) }) {
@@ -336,19 +338,21 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
     
     private func restartWith(pairingFile: String, op: String) async throws(MinimuxerError) {
-        let activeProtocol = self.gateway.pairingFileType
-        guard let mountPath = await state.lastDocsPath else {
+        let (mountPath, preferred) = await state.with { ($0.lastDocsPath, $0.preferredProtocol) }
+        guard let mountPath else {
+            let activeProtocol = self.gateway.pairingFileType
             throw MinimuxerError.mount(protocol: activeProtocol, reason: "start() should be invoked before requesting \(op). cause: lastDocsPath is nil")
         }
         try await stop()
-        try await start(pairingFile: pairingFile, mountPath: mountPath)
+        try await start(pairingFile: pairingFile, mountPath: mountPath, preferred: preferred)
     }
 
     func restart() async throws(MinimuxerError) {
         verboseLog("[minimuxer] Restarting services...")
         let activeProtocol = self.gateway.pairingFileType
         guard let pairingData = self.gateway.pairingFileData,
-              let pairingFile = String(data: pairingData, encoding: .utf8) else {
+              let pairingFile = String(data: pairingData, encoding: .utf8) else
+        {
             debugLog("[minimuxer] restart: no existing pairing file — cannot restart")
             throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: "No existing pairing file found in gateway during restart")
         }
@@ -370,7 +374,8 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         if isMounted {
             return
         }
-        guard let mountPath = await state.lastDocsPath else {
+        guard let mountPath = await state.lastDocsPath else
+        {
             let activeProtocol = self.gateway.pairingFileType
             throw MinimuxerError.mount(protocol: activeProtocol, reason: "DDI mount path not set")
         }
