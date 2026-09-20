@@ -9,7 +9,7 @@
 import Foundation
 import IDevice
 import DeviceGatewayAPI
-internal import MinimuxerCommon
+import MinimuxerCommon
 
 internal final class IdeviceGatewayError: DeviceGatewayError, @unchecked Sendable {
     override var errorDescription: String? {

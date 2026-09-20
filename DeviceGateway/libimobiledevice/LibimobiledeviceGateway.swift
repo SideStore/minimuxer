@@ -11,7 +11,7 @@ import libimobiledevice
 import OpenSSL
 import RPPairing
 import DeviceGatewayAPI
-internal import MinimuxerCommon
+import MinimuxerCommon
 
 internal final class LibimobiledeviceGatewayError: DeviceGatewayError, @unchecked Sendable {
     override var errorDescription: String? {
