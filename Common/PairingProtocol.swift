@@ -12,6 +12,7 @@ public enum PairingError: LocalizedError, CustomStringConvertible, Sendable {
     case unreadable(String)
     case invalidPlist(String)
     case incomplete(protocolType: PairingProtocol, missingKeys: [String])
+    case ambiguous(String)
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ public enum PairingError: LocalizedError, CustomStringConvertible, Sendable {
             return "The pairing file could not be parsed as a property list (plist): \(reason)"
         case .incomplete(let protocolType, let missingKeys):
             return "The pairing file is incomplete for .\(protocolType). Missing keys: \(missingKeys.joined(separator: ", "))."
+        case .ambiguous(let reason):
+            return "The pairing file format is ambiguous: \(reason)"
         }
     }
 

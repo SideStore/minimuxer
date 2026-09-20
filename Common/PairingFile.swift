@@ -95,29 +95,54 @@ public struct LockdownPairingFile: PairingFile {
 }
 
 public enum PairingFileParser {
-    public static func validatePairingFile(from plist: [String: any Sendable]?) throws -> PairingProtocol {
+    public static func validatePairingFile(from plist: [String: any Sendable]?, preferred: PairingProtocol? = nil) throws -> PairingProtocol {
         guard let plist = plist else {
             throw PairingError.invalidPlist("The file could not be parsed as a property list (plist).")
         }
 
-        let missingRP = RPPairingFile.missingKeys(in: plist)
-        if missingRP.isEmpty {
+        if let preferred = preferred {
+            switch preferred {
+                case .rppairing:
+                    let missingRemoteRP = RPPairingFile.missingKeys(in: plist)
+                    if missingRemoteRP.isEmpty {
+                        return .rppairing
+                    }
+                case .lockdown:
+                    let missingLockdown = LockdownPairingFile.missingKeys(in: plist)
+                    if missingLockdown.isEmpty {
+                        return .lockdown
+                    }
+                case .unknown:
+                    break
+            }
+        }
+
+        let missingRemoteRP = RPPairingFile.missingKeys(in: plist)
+        let missingLockdown = LockdownPairingFile.missingKeys(in: plist)
+
+        let hasRemoteRP = missingRemoteRP.isEmpty
+        let hasLockdown = missingLockdown.isEmpty
+
+        if hasRemoteRP && hasLockdown {
+            throw PairingError.ambiguous("The pairing file contains credentials for both Remote Pairing and Lockdown protocols. Specify a preferred protocol to resolve ambiguity.")
+        }
+
+        if hasRemoteRP {
             return .rppairing
         }
 
-        let missingLockdown = LockdownPairingFile.missingKeys(in: plist)
-        if missingLockdown.isEmpty {
+        if hasLockdown {
             return .lockdown
         }
 
         throw PairingError.invalidPlist(
             "Unrecognized pairing file format. " +
-            "  • Missing .\(PairingProtocol.rppairing) attributes: \(missingRP); " +
+            "  • Missing .\(PairingProtocol.rppairing) attributes: \(missingRemoteRP); " +
             "  • Missing .\(PairingProtocol.lockdown)  attributes: \(missingLockdown)."
         )
     }
 
-    public static func parse(content: String) throws -> any PairingFile {
+    public static func parse(content: String, preferred: PairingProtocol? = nil) throws -> any PairingFile {
         guard let data = content.data(using: .utf8) else {
             throw PairingError.unreadable("UTF-8 encoding failed")
         }
@@ -125,14 +150,14 @@ public enum PairingFileParser {
             throw PairingError.invalidPlist("PropertyListSerialization failed")
         }
         let plist = ConcurrencyUtils.toSendableDictionary(rawPlist)
-        let mode = try validatePairingFile(from: plist)
+        let mode = try validatePairingFile(from: plist, preferred: preferred)
         switch mode {
-        case .rppairing:
-            return try RPPairingFile(content: content, plist: plist, data: data)
-        case .lockdown:
-            return try LockdownPairingFile(content: content, plist: plist, data: data)
-        case .unknown:
-            throw PairingError.invalidPlist("Unknown pairing file format")
+            case .rppairing:
+                return try RPPairingFile(content: content, plist: plist, data: data)
+            case .lockdown:
+                return try LockdownPairingFile(content: content, plist: plist, data: data)
+            case .unknown:
+                throw PairingError.invalidPlist("Unknown pairing file format")
         }
     }
 }
