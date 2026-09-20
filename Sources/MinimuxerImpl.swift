@@ -313,7 +313,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
     }
 
-    func stop() async {
+    func stop() async throws(MinimuxerError) {
         // actor serialization scope
         let oldTask = await state.with { state -> Task<Bool, Error>? in
             state.status = .inprogress  // mark inprogress
@@ -326,6 +326,9 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         if self.gateway.requiresUsbmuxd {
             await self.proxyServer.stop()
         }
+        try await runWithChecks("while stopping gateway", catchAll: MinimuxerError.close) {
+            try await self.gateway.stop()
+        }
         // mark ready!
         await state.with {
             $0.status = .stopped
@@ -337,7 +340,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         guard let mountPath = await state.lastDocsPath else {
             throw MinimuxerError.mount(protocol: activeProtocol, reason: "start() should be invoked before requesting \(op). cause: lastDocsPath is nil")
         }
-        await stop()
+        try await stop()
         try await start(pairingFile: pairingFile, mountPath: mountPath)
     }
 

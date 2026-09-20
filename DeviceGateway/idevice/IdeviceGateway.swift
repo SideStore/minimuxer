@@ -84,11 +84,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         cleanup()
     }
 
-    private func cleanup() {
+    public override func cleanup() {
         debugLog("[IdeviceGateway] cleanup() called")
-        setInitialized(false)
-        setPairingFileData(nil)
-        
         if let pairingFile = self.pairingFile {
             verboseLog("[IdeviceGateway] cleanup() freeing pairingFile")
             if pairingFileType == .rppairing {
@@ -99,18 +96,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             self.pairingFile = nil
         }
 
-        setPairingFileType(.unknown)
         lastError = nil
-        if let handshake = handshake {
-            verboseLog("[IdeviceGateway] cleanup() freeing handshake")
-            rsd_handshake_free(handshake)
-            self.handshake = nil
-        }
-        if let adapter = adapter {
-            verboseLog("[IdeviceGateway] cleanup() freeing adapter")
-            adapter_free(adapter)
-            self.adapter = nil
-        }
+        super.cleanup()
     }
 
     private func verifyInitialized() throws {
@@ -130,6 +117,13 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             adapter_free(adapter)
             self.adapter = nil
         }
+    }
+
+    public override func stop() async throws {
+        try await withFFIDispatch {
+            self.cleanup()
+        }
+        try await super.stop()
     }
 
     public override func setLogging(_ enabled: Bool) {

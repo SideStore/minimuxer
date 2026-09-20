@@ -107,18 +107,22 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
         cleanup()
     }
 
-    private func cleanup() {
+    public override func cleanup() {
         debugLog("[LibimobiledeviceGateway] cleanup() called")
-        setInitialized(false)
-        setPairingFileData(nil)
         self.cachedUDID = nil
-        setPairingFileType(.unknown)
-        cleanupRPTunnel()
         rpIdentity = nil
+        super.cleanup()
     }
 
     public override func invalidateConnection() {
         cleanupRPTunnel()
+    }
+
+    public override func stop() async throws {
+        try await withFFIDispatch {
+            self.cleanup()
+        }
+        try await super.stop()
     }
 
     public override func setLogging(_ enabled: Bool) {

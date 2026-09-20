@@ -33,6 +33,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
     func setPort(_ port: UInt16, for protocolType: PairingProtocol)
 
     func start(pairingFileContent: String, preferred: PairingProtocol?) async throws
+    func stop() async throws
     func setDeviceEndpointIp(_ ip: String?)
     func setLogging(_ enabled: Bool)
 

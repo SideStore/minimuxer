@@ -87,6 +87,17 @@ open class BaseDeviceGateway: @unchecked Sendable {
     open func invalidateConnection() {
         // Subclasses override to invalidate cached handles/tunnels
     }
+
+    open func cleanup() {
+        setInitialized(false)
+        setPairingFileData(nil)
+        setPairingFileType(.unknown)
+        invalidateConnection()
+    }
+
+    open func stop() async throws {
+        cleanup()
+    }
 }
 
 
