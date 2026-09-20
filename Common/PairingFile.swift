@@ -104,16 +104,18 @@ public enum PairingFileParser {
             switch preferred {
                 case .rppairing:
                     let missingRemoteRP = RPPairingFile.missingKeys(in: plist)
-                    if missingRemoteRP.isEmpty {
-                        return .rppairing
+                    guard missingRemoteRP.isEmpty else {
+                        throw PairingError.incomplete(protocolType: .rppairing, missingKeys: missingRemoteRP)
                     }
+                    return .rppairing
                 case .lockdown:
                     let missingLockdown = LockdownPairingFile.missingKeys(in: plist)
-                    if missingLockdown.isEmpty {
-                        return .lockdown
+                    guard missingLockdown.isEmpty else {
+                        throw PairingError.incomplete(protocolType: .lockdown, missingKeys: missingLockdown)
                     }
+                    return .lockdown
                 case .unknown:
-                    break
+                    throw PairingError.invalidPlist("Unknown pairing protocol specified")
             }
         }
 
