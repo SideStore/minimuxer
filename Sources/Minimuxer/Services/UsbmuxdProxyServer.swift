@@ -9,12 +9,12 @@
 
 import Foundation
 import Network
-internal import DeviceGatewayAPI
+internal import DeviceGateway
 internal import MinimuxerCommon
 
 final internal class UsbmuxdProxyServer {
     let deviceProvider: DeviceProvider
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
 

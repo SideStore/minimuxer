@@ -8,11 +8,11 @@
 
 import Foundation
 internal import MinimuxerCommon
-internal import DeviceGatewayAPI
+internal import DeviceGateway
 
 actor DeviceConnectionManager {
     let deviceProvider: DeviceProvider
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
 

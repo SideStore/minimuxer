@@ -8,12 +8,12 @@
 //
 
 import Foundation
-internal import DeviceGatewayAPI
+import DeviceGateway
 
 actor DeviceEndpoint {
 
     let deviceProvider: DeviceProvider
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
 

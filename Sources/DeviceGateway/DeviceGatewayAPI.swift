@@ -23,7 +23,7 @@ public struct PairedDeviceRecord: Sendable {
     }
 }
 
-public protocol DeviceGatewayAPI: AnyObject, Sendable {
+public protocol DeviceGateway: AnyObject, Sendable {
     var requiresUsbmuxd: Bool { get }
     var pairingFileType: PairingProtocol { get }
     var pairingFileData: Data? { get }
@@ -83,7 +83,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
     func afcGetFileInfo(bundleId: String, path: String) async throws -> (isDirectory: Bool, fileSize: Int64)
 }
 
-public extension DeviceGatewayAPI {
+public extension DeviceGateway {
     func start(pairingFileContent: String, preferred: PairingProtocol? = nil) async throws {
         try await start(pairingFileContent: pairingFileContent, preferred: preferred)
     }

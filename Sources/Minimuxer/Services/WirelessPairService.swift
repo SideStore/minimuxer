@@ -8,13 +8,13 @@
 
 import Foundation
 internal import MinimuxerCommon
-internal import DeviceGatewayAPI
+internal import DeviceGateway
 
 // MARK: - Wireless Pair API
 
 final internal class WirelessPairService: WirelessPairAPI {
     let deviceProvider: DeviceProvider
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
     

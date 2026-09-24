@@ -8,11 +8,11 @@
 
 import Foundation
 internal import MinimuxerCommon
-internal import DeviceGatewayAPI
+internal import DeviceGateway
 
 final internal class HeartbeatService {
     let deviceProvider: DeviceProvider
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
     let proxyServer: UsbmuxdProxyServer

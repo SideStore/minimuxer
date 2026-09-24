@@ -10,8 +10,8 @@ import Foundation
 import Combine
 import Network
 public import MinimuxerCommon
-public import DeviceGatewayAPI
-import IdeviceGateway
+public import DeviceGateway
+import IDeviceGateway
 import LibimobiledeviceGateway
 
 public enum MinimuxerComponent: String {
@@ -165,7 +165,7 @@ public protocol MinimuxerFacade: AnyObject, Sendable {
     var network: any NetworkObserverAPI { get }
     var wirelessPair: any WirelessPairAPI { get }
     var emproxy: any EMProxyAPI { get }
-    var gateway: any DeviceGatewayAPI { get }
+    var gateway: any DeviceGateway { get }
     @discardableResult
     func set(_ params: MinimuxerParams) -> any MinimuxerFacade
 }
@@ -181,7 +181,7 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
     public let wirelessPair: any WirelessPairAPI
     public let emproxy: any EMProxyAPI
     let deviceProvider: DeviceProvider
-    public var gateway: any DeviceGatewayAPI {
+    public var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
 
@@ -238,7 +238,7 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
         return self
     }
 
-    private static func makeGateway(for backend: GatewayBackend) -> any DeviceGatewayAPI {
+    private static func makeGateway(for backend: GatewayBackend) -> any DeviceGateway {
         switch backend {
             case .libimobiledevice:
                 return LibimobiledeviceGateway()

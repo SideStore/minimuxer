@@ -10,7 +10,7 @@ import Foundation
 import libimobiledevice
 import OpenSSL
 import RPPairing
-import DeviceGatewayAPI
+import DeviceGateway
 import MinimuxerCommon
 
 internal final class LibimobiledeviceGatewayError: DeviceGatewayError, @unchecked Sendable {
@@ -72,7 +72,7 @@ public enum DeviceService: String, Sendable {
 private let kAfcChunkSize = 1024 * 1024 // 1 MB AFC bulk transfer chunk
 private let kDefaultTimeoutMs: Int32 = 120000
 
-public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @unchecked Sendable {
+public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @unchecked Sendable {
     public static let shared = LibimobiledeviceGateway()
     public let requiresUsbmuxd: Bool = true
 

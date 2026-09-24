@@ -8,12 +8,12 @@
 
 import Foundation
 import ZIPFoundation
-internal import DeviceGatewayAPI
+internal import DeviceGateway
 internal import MinimuxerCommon
 
 final internal class Mounter {
     let deviceProvider: DeviceProvider
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
     let proxyServer: UsbmuxdProxyServer

@@ -9,7 +9,7 @@
 import Foundation
 import MinimuxerCommon
 
-enum AbstractClassError: Error, Sendable {
+public enum AbstractClassError: Error, Sendable {
     case abstractInitializerInvoked
     case abstractMethodInvoked
 }
@@ -224,7 +224,7 @@ extension BaseDeviceGateway {
         return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii)
     }
 
-    open func findProcessPID(
+    public func findProcessPID(
         appId: String,
         bundlePath: String? = nil,
         executableName: String? = nil,

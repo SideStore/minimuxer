@@ -8,7 +8,7 @@
 
 import Foundation
 internal import MinimuxerCommon
-import DeviceGatewayAPI
+import DeviceGateway
 
 public enum MinimuxerLogging {
     private static let lock = NSLock()

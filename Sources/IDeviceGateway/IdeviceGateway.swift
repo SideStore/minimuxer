@@ -8,7 +8,7 @@
 
 import Foundation
 import IDevice
-import DeviceGatewayAPI
+import DeviceGateway
 import MinimuxerCommon
 
 internal final class IdeviceGatewayError: DeviceGatewayError, @unchecked Sendable {
@@ -33,7 +33,7 @@ extension String {
     }
 }
 
-public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @unchecked Sendable {
+public final class IdeviceGateway: BaseDeviceGateway, DeviceGateway, @unchecked Sendable {
     public static let shared = IdeviceGateway()
     public let requiresUsbmuxd: Bool = false
     var lastError: Error? = nil

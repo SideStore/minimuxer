@@ -7,21 +7,21 @@
 //
 
 import Foundation
-import DeviceGatewayAPI
+import DeviceGateway
 
 final class DeviceProvider: @unchecked Sendable {
     private let lock = NSLock()
-    private var cachedGateway: any DeviceGatewayAPI
+    private var cachedGateway: any DeviceGateway
 
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         lock.withLock { cachedGateway }
     }
 
-    init(gateway: any DeviceGatewayAPI) {
+    init(gateway: any DeviceGateway) {
         self.cachedGateway = gateway
     }
 
-    func setGateway(_ newGateway: any DeviceGatewayAPI) {
+    func setGateway(_ newGateway: any DeviceGateway) {
         lock.withLock {
             self.cachedGateway = newGateway
         }

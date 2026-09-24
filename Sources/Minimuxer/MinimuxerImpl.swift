@@ -9,7 +9,7 @@
 import Foundation
 import Combine
 import ZIPFoundation
-internal import DeviceGatewayAPI
+internal import DeviceGateway
 internal import MinimuxerCommon
 
 private enum MinimuxerStatus{
@@ -23,7 +23,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     let deviceProvider: DeviceProvider
-    var gateway: any DeviceGatewayAPI {
+    var gateway: any DeviceGateway {
         deviceProvider.gateway
     }
     let network: NetworkObserverService
