@@ -28,6 +28,8 @@ final internal class UsbmuxdProxyServer {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "minimuxer.UsbmuxdProxyServer", qos: .userInitiated)
 
+    let logger = DeviceGatewayLogging.logger
+
     // Stable device state
     private var currentDeviceIp: String?
     private var currentEvent: String?
@@ -52,7 +54,7 @@ final internal class UsbmuxdProxyServer {
     @discardableResult
     func start(udid: String) async throws -> Bool {
         guard !started else {
-            verboseLog("[minimuxer] Already started UsbmuxdProxyServer, skipping")
+            logger.trace("[minimuxer] Already started UsbmuxdProxyServer, skipping")
             return false
         }
         deviceUDID = udid
@@ -73,7 +75,7 @@ final internal class UsbmuxdProxyServer {
                 guard let self = self else { return }
                 switch state {
                     case .ready:
-                        verboseLog("[minimuxer] UsbmuxdProxyServer (NWListener) bound successfully to \(MinimuxerConstants.usbmuxdHost):\(MinimuxerConstants.usbmuxdPort)")
+                        logger.trace("[minimuxer] UsbmuxdProxyServer (NWListener) bound successfully to \(MinimuxerConstants.usbmuxdHost):\(MinimuxerConstants.usbmuxdPort)")
                         self.isListening = true
                         self.started = true
                         if !hasResponded {
@@ -81,7 +83,7 @@ final internal class UsbmuxdProxyServer {
                             continuation.resume(returning: true)
                         }
                     case .failed(let error):
-                        debugLog("[minimuxer] UsbmuxdProxyServer listener failed with error: \(error)")
+                        logger.debug("[minimuxer] UsbmuxdProxyServer listener failed with error: \(error)")
                         self.isListening = false
                         self.started = false
                         if !hasResponded {
@@ -139,7 +141,7 @@ final internal class UsbmuxdProxyServer {
         connection.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] sizeData, _, _, error in
             guard let self = self else { return }
             if let error = error {
-                debugLog("[minimuxer] UsbmuxdProxyServer receive size error: \(error)")
+                logger.debug("[minimuxer] UsbmuxdProxyServer receive size error: \(error)")
                 connection.cancel()
                 return
             }
@@ -150,7 +152,7 @@ final internal class UsbmuxdProxyServer {
 
             let size = sizeData.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
             guard size >= UInt32(self.headerLen) && size <= UInt32(self.maxBufferLen) else {
-                debugLog("[minimuxer] UsbmuxdProxyServer invalid packet size: \(size)")
+                logger.debug("[minimuxer] UsbmuxdProxyServer invalid packet size: \(size)")
                 connection.cancel()
                 return
             }
@@ -160,7 +162,7 @@ final internal class UsbmuxdProxyServer {
             connection.receive(minimumIncompleteLength: bodyLen, maximumLength: bodyLen) { [weak self] bodyData, _, _, bodyError in
                 guard let self = self else { return }
                 if let bodyError = bodyError {
-                    debugLog("[minimuxer] UsbmuxdProxyServer receive body error: \(bodyError)")
+                    logger.debug("[minimuxer] UsbmuxdProxyServer receive body error: \(bodyError)")
                     connection.cancel()
                     return
                 }
@@ -191,7 +193,7 @@ final internal class UsbmuxdProxyServer {
 
             connection.send(content: responseData, completion: .contentProcessed({ error in
                 if let error = error {
-                    debugLog("[minimuxer] UsbmuxdProxyServer send error: \(error)")
+                    self.logger.debug("[minimuxer] UsbmuxdProxyServer send error: \(error)")
                 }
             }))
         } catch {}
@@ -206,7 +208,7 @@ final internal class UsbmuxdProxyServer {
             throw MinimuxerError.connect("Malformed usbmuxd packet: missing MessageType field")
         }
 
-        verboseLog("[minimuxer] usbmux message: \(messageType)")
+        logger.trace("[minimuxer] usbmux message: \(messageType)")
 
         switch messageType {
             case "ListDevices":
@@ -239,7 +241,7 @@ final internal class UsbmuxdProxyServer {
                 }
                 return ["PairRecordData": pairingData]
             default:
-                debugLog("[minimuxer] WARN: unknown message type: \(messageType)")
+                logger.debug("[minimuxer] WARN: unknown message type: \(messageType)")
                 throw MinimuxerError.connect("Unsupported usbmuxd message type: \(messageType)")
         }
     }

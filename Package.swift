@@ -6,8 +6,8 @@ let localPrefix: String = "./"
 
 var targets: [Target] = [
     // Base API Targets
-    .target(name: "MinimuxerCommon"),
-    .target(name: "DeviceGateway", dependencies: ["MinimuxerCommon"]),
+    .target(name: "MinimuxerCommon", dependencies: [.product(name: "Logging", package: "swift-log")]),
+    .target(name: "DeviceGateway", dependencies: ["MinimuxerCommon", .product(name: "Logging", package: "swift-log")]),
 
     // Dynamic idevice Target
     .target(name: "IDeviceGateway", dependencies: ["DeviceGateway", "MinimuxerCommon", "IDevice"]),
@@ -33,6 +33,7 @@ var targets: [Target] = [
             "DeviceGateway",
             "LibimobiledeviceGateway",
             "EMProxy",
+            .product(name: "Logging", package: "swift-log"),
             .product(name: "ZIPFoundation", package: "ZIPFoundation")
         ],
     ),
@@ -79,11 +80,12 @@ let package = Package(
         .library(name: "LibimobiledeviceGateway", targets: ["LibimobiledeviceGateway"]),
         .library(name: "IDeviceGateway-Dynamic", type: .dynamic, targets: ["IDeviceGateway"]),
         .library(name: "LibimobiledeviceGateway-Dynamic", type: .dynamic, targets: ["LibimobiledeviceGateway"]),
-        .library(name: "Minimuxer", targets: ["Minimuxer"]),
+        .library(name: "Minimuxer", targets: ["Minimuxer", "IDeviceGateway"]),
     ],
     dependencies: [
         .package(url: "https://github.com/mahee96/RemotePairingKit.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", .upToNextMajor(from: "0.9.0")),
+        .package(url: "https://github.com/apple/swift-log", from: "1.6.0"),
     ],
     targets: targets,
     cLanguageStandard: .gnu11,

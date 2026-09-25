@@ -8,6 +8,7 @@
 
 import Foundation
 import MinimuxerCommon
+import Logging
 
 public enum AbstractClassError: Error, Sendable {
     case abstractInitializerInvoked
@@ -15,6 +16,8 @@ public enum AbstractClassError: Error, Sendable {
 }
 
 open class BaseDeviceGateway: @unchecked Sendable {
+    public let logger = DeviceGatewayLogging.logger
+
     public package(set) var pairingFileType: PairingProtocol = .unknown
     public package(set) var pairingDataDict: [String: any Sendable]? = nil
 
@@ -64,24 +67,19 @@ open class BaseDeviceGateway: @unchecked Sendable {
 
     public func setPort(_ port: UInt16, for protocolType: PairingProtocol) {
         guard protocolPorts[protocolType] != port else { return }
-        debugLog("[\(logTag)] setPort(\(port), for: .\(protocolType)) called")
+        logger.debug("[\(logTag)] setPort(\(port), for: .\(protocolType)) called")
         protocolPorts[protocolType] = port
         invalidateConnection()
     }
 
     public func setDeviceEndpointIp(_ ip: String?) {
-        debugLog("[\(logTag)] setDeviceEndpointIp(\(ip ?? "nil")) called")
+        logger.debug("[\(logTag)] setDeviceEndpointIp(\(ip ?? "nil")) called")
         guard deviceEndpointIp != ip else {
-            debugLog("[\(logTag)] setDeviceEndpointIp: IP is already \(ip ?? "nil"), skipping invalidation")
+            logger.debug("[\(logTag)] setDeviceEndpointIp: IP is already \(ip ?? "nil"), skipping invalidation")
             return
         }
         deviceEndpointIp = ip
         invalidateConnection()
-    }
-
-    open func setLogging(_ enabled: Bool) {
-        DeviceGatewayLogging.setLogging(enabled)
-        debugLog("[\(logTag)] setLogging(\(enabled)) called")
     }
 
     open func invalidateConnection() {
@@ -230,7 +228,7 @@ extension BaseDeviceGateway {
         executableName: String? = nil,
         sendCommand: (String, [String]) throws -> String?
     ) throws -> UInt32? {
-        debugLog("[\(logTag)] findProcessPID() searching for appId: \(appId), bundlePath: \(bundlePath ?? "nil"), executableName: \(executableName ?? "nil")")
+        logger.debug("[\(logTag)] findProcessPID() searching for appId: \(appId), bundlePath: \(bundlePath ?? "nil"), executableName: \(executableName ?? "nil")")
 
         var targetTerms: [String] = []
 
@@ -273,13 +271,13 @@ extension BaseDeviceGateway {
             targetTerms.append(appId)
         }
 
-        verboseLog("[\(logTag)] findProcessPID() target search terms: \(targetTerms)")
+        logger.trace("[\(logTag)] findProcessPID() target search terms: \(targetTerms)")
 
         // Direct attach via RSP vAttachName
         for term in targetTerms {
             let hex = Self.stringToHex(term)
             let attachCmd = "vAttachName;\(hex)"
-            debugLog("[\(logTag)] findProcessPID() trying direct attach: '\(attachCmd)' for term '\(term)'")
+            logger.debug("[\(logTag)] findProcessPID() trying direct attach: '\(attachCmd)' for term '\(term)'")
 
             guard let attachResp = try? sendCommand(attachCmd, []),
                   !attachResp.isEmpty,
@@ -288,15 +286,15 @@ extension BaseDeviceGateway {
                 continue
             }
 
-            debugLog("[\(logTag)] findProcessPID() direct attach succeeded: '\(attachResp)'")
+            logger.debug("[\(logTag)] findProcessPID() direct attach succeeded: '\(attachResp)'")
             if let stopReply = RSPStopReply(rawPacket: attachResp), let json = stopReply.jsonPrettyPrinted {
-                debugLog("[\(logTag)] direct attach stop reply JSON:\n\(json)")
+                logger.debug("[\(logTag)] direct attach stop reply JSON:\n\(json)")
             }
             _ = try? sendCommand("D", [])
             return 0
         }
 
-        debugLog("[\(logTag)] findProcessPID() no running process found for \(appId)")
+        logger.debug("[\(logTag)] findProcessPID() no running process found for \(appId)")
         return nil
     }
 }

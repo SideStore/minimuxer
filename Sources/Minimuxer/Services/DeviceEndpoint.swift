@@ -31,13 +31,13 @@ actor DeviceEndpoint {
     func update(_ newIP: String) {
         ipAddr = newIP
         self.gateway.setDeviceEndpointIp(newIP)
-        verboseLog("[minimuxer] device endpoint updated -> \(newIP)")
+        DeviceGatewayLogging.logger.trace("[minimuxer] device endpoint updated -> \(newIP)")
     }
 
     func clear() {
         ipAddr = nil
         self.gateway.setDeviceEndpointIp(nil)
-        verboseLog("[minimuxer] device endpoint cleared -> nil")
+        DeviceGatewayLogging.logger.trace("[minimuxer] device endpoint cleared -> nil")
     }
 
     var isInitialized: Bool {

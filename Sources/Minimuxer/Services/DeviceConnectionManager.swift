@@ -9,6 +9,7 @@
 import Foundation
 internal import MinimuxerCommon
 internal import DeviceGateway
+import Logging
 
 actor DeviceConnectionManager {
     let deviceProvider: DeviceProvider
@@ -33,24 +34,23 @@ actor DeviceConnectionManager {
     var remoteServerIp: String?
     var isRemoteServerIpReachable = false
 
-    private let lock = NSLock()
-    private nonisolated(unsafe) var cachedDeviceProbeTimeout: Int
+    var deviceProbeTimeout: Int
+    let logger = DeviceGatewayLogging.logger
 
-    nonisolated var deviceProbeTimeout: Int {
-        get { lock.withLock { cachedDeviceProbeTimeout } }
-        set { lock.withLock { cachedDeviceProbeTimeout = newValue } }
+    func setDeviceProbeTimeout(_ timeoutMs: Int) {
+        deviceProbeTimeout = timeoutMs
     }
 
     init(deviceProvider: DeviceProvider, deviceProbeTimeout: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs) {
         self.deviceProvider = deviceProvider
-        self.cachedDeviceProbeTimeout = deviceProbeTimeout
+        self.deviceProbeTimeout = deviceProbeTimeout
     }
 
     func bindConnectionConfig(_ binding: ConnectionConfigBinding) {
         connectionConfigCache = binding
         // ensure started if not started already
         let connectionMode = binding.getConnectionMode()
-        verboseLog("""
+        logger.trace("""
         [minimuxer] [iface] preferred connection mode set in binding
           • mode: .\(connectionMode) 
           • overrideTunnelPeerIp: \(binding.getOverrideTunnelPeerIp()) 
@@ -65,7 +65,7 @@ actor DeviceConnectionManager {
 
     private func tcpProbe(_ ip: String?) async -> Bool {
         guard let ip, !ip.isEmpty else {
-            debugLog("[minimuxer] [iface] tcpProbe skipped — IP is nil or empty")
+            logger.debug("[minimuxer] [iface] tcpProbe skipped — IP is nil or empty")
             return false
         }
         let currentProtocol = gateway.pairingFileType
@@ -85,7 +85,7 @@ actor DeviceConnectionManager {
                 }
             }
         }
-        debugLog("[minimuxer] [iface] tcpProbe \(ip):\(gateway.servicePort) (protocol: .\(gateway.pairingFileType)) -> \(reachable ? "reachable" : "unreachable")")
+        logger.debug("[minimuxer] [iface] tcpProbe \(ip):\(gateway.servicePort) (protocol: .\(gateway.pairingFileType)) -> \(reachable ? "reachable" : "unreachable")")
         return reachable
     }
 
@@ -96,7 +96,7 @@ actor DeviceConnectionManager {
 
         switch connectionMode {
             case .notConfigured:
-                debugLog("[minimuxer] [iface] connection mode not configured. skipping refresh...")
+                logger.debug("[minimuxer] [iface] connection mode not configured. skipping refresh...")
                 return false
             
             case .localVPN:
@@ -112,7 +112,8 @@ actor DeviceConnectionManager {
                 // set new states
                 interfacesCache = NetworkIfaceScanner.scan(quiet: quietScan)
                 
-                let (resolvedTunnel, candidatePeer, isDerivedReachable) = await resolveLocalVPNTunnel(from: interfacesCache)
+                let candidatePeer = await resolveLocalVPNTunnel(from: interfacesCache)
+                let (resolvedTunnel, isDerivedReachable) = (candidatePeer?.tunnel, candidatePeer != nil)
                 vpnIface = resolvedTunnel
                 reportedPeerIp = resolvedTunnel?.linkLayerDestinationIP?.v4?.host
                 derivedPeerIp = candidatePeer?.ip
@@ -132,12 +133,12 @@ actor DeviceConnectionManager {
                     lastIsDerivedPeerIpReachable == isDerivedPeerIpReachable &&
                     lastIsOverridePeerIpReachable == isOverridePeerIpReachable
                 {
-                    debugLog("[minimuxer] [iface] no interface state changes detected, skipping refresh")
+                    logger.debug("[minimuxer] [iface] no interface state changes detected, skipping refresh")
                     return false
                 }
                 
                 // continue updating
-                debugLog("[minimuxer] [iface] using the first uTun vpn interface info")
+                logger.debug("[minimuxer] [iface] using the first uTun vpn interface info")
                 // set states for this mode
                 // NOTE: we do not alter user configured remote override peer IP
                 connectionConfigCache?.setTunnelIfaceIp(vpnIface?.interfaceAddresses.v4.first?.host)
@@ -149,7 +150,7 @@ actor DeviceConnectionManager {
                 // clear auto discovered reachability state
                 connectionConfigCache?.setRemoteReachable(false)
             
-                debugLog("""
+                logger.debug("""
                 [minimuxer] [iface] refresh - rescan routes
                   • mode: .\(connectionMode)
                   • local iface count: \(interfacesCache.count)
@@ -169,7 +170,7 @@ actor DeviceConnectionManager {
                 let serverIp = (rawServerIp?.isEmpty ?? true) ? nil : rawServerIp
                 let reachable = await tcpProbe(serverIp)
                 if self.lastConnectionMode == connectionMode && serverIp == remoteServerIp && reachable == isRemoteServerIpReachable {
-                    debugLog("[minimuxer] [iface] no remote server state changes detected, skipping refresh")
+                    logger.debug("[minimuxer] [iface] no remote server state changes detected, skipping refresh")
                     return false
                 }
                 remoteServerIp = serverIp
@@ -186,7 +187,7 @@ actor DeviceConnectionManager {
                 connectionConfigCache?.setOverrideTunnelPeerReachable(false)
                 reportedPeerIp = nil
             
-                debugLog("""
+                logger.debug("""
                 [minimuxer] [iface] refresh
                   • mode: .\(connectionMode)
                   • remote server IP: \(remoteServerIp ?? "nil")
@@ -203,24 +204,27 @@ actor DeviceConnectionManager {
         let mask: String?
     }
 
-    static func resolveCandidateTunnels(from interfaces: Set<NetInfo>) -> [TunnelNetInfo] {
-        interfaces
+    static func resolveCandidateTunnels(from interfaces: Set<NetInfo>, _ filter: ((TunnelNetInfo) -> Bool)? = nil) -> [TunnelNetInfo] {
+        let filter = filter ?? {
+            $0.tunnelType == .utun && 
+            !$0.interfaceAddresses.v4.isEmpty && $0.interfaceAddresses.v6.isEmpty
+        }
+        return interfaces
             .compactMap { $0 as? TunnelNetInfo }
-            .filter { 
-                $0.tunnelType == .utun && 
-                !$0.interfaceAddresses.v4.isEmpty && $0.interfaceAddresses.v6.isEmpty 
-            }
+            .filter(filter)
             .sorted { $0.name < $1.name }
     }
 
-    static func resolveCandidatePeers(from interfaces: Set<NetInfo>) -> [CandidatePeer] {
-        resolveCandidateTunnels(from: interfaces).flatMap { resolveCandidatePeers(for: $0) }
+    static func resolveCandidatePeers(from interfaces: Set<NetInfo>, _ filter: ((TunnelNetInfo) -> Bool)? = nil) -> [CandidatePeer] {
+        return resolveCandidateTunnels(from: interfaces, filter)
+            .sorted { $0.name < $1.name }
+            .flatMap { resolveCandidatePeers(for: $0) }
     }
 
-    private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) async -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
+    private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) async -> CandidatePeer? {
         // pick all candidate peer ips
         let candidates = Self.resolveCandidatePeers(from: interfaces)
-        guard !candidates.isEmpty else { return (nil, nil, false) }
+        guard !candidates.isEmpty else { return nil }
 
         // parallelized tcp service port probing on all candidate ips
         let resolved = await withTaskGroup(of: CandidatePeer?.self, returning: CandidatePeer?.self) { group in
@@ -234,50 +238,37 @@ actor DeviceConnectionManager {
             return nil
         }
 
-        if let resolved {
-            return (resolved.tunnel, resolved, true)
-        }
-
-        return (nil, nil, false)
+        return resolved
     }
 
     private static func isValidCandidatePeer(_ ip: String, for tunnel: TunnelNetInfo) -> Bool {
-        guard !ip.isEmpty,
-               ip != "0.0.0.0",             // reject catch all  addr (not unicast connectable)
-               ip != "default",             // reject default    addr (not unicast connectable)
-               ip != "255.255.255.255",     // reject broadcast  addr (not unicast connectable)
-              !ip.hasPrefix("127."),        // reject localhost  addr (not preferred coz ourself)
-              !ip.hasPrefix("224."),        // reject multicast  addr (not unicast connectable)
-              !ip.hasPrefix("239.") else    // private multicast addr (not unicast connectable)
-        {
-            return false
-        }
+        // reject empty/catch all/default/broadcast
+        !["", "default", "0.0.0.0", "255.255.255.255"].contains { $0 == ip } &&
+        // localhost/multicast/private multicast
+        !["127.", "224.", "239."].contains { ip.hasPrefix($0) } && 
         // Reject self-addresses
-        let isSelf = tunnel.interfaceAddresses.v4.contains { $0.host == ip }
-        return !isSelf
+        !tunnel.interfaceAddresses.v4.contains { $0.host == ip }
     }
 
     private static func resolveCandidatePeers(for tunnel: TunnelNetInfo) -> [CandidatePeer] {
+        // TODO: If we are going to add priority, that should be shown in the data structure
         var candidates: [CandidatePeer] = []
         var seen = Set<String>()
 
-        func addCandidate(_ ip: String?, mask: String?) {
-            guard let ip = ip, isValidCandidatePeer(ip, for: tunnel), !seen.contains(ip) else { return }
-            seen.insert(ip)
-            let candidate = CandidatePeer(tunnel: tunnel, ip: ip, mask: mask)
-            candidates.append(candidate)
+        for route in tunnel.destinationRoutes {
+            if let gate = route.gatewayIPv4, !seen.contains(gate) && isValidCandidatePeer(gate, for: tunnel)  {
+                seen.insert(gate)
+                candidates.append(CandidatePeer(tunnel: tunnel, ip: gate, mask: "255.255.255.255"))
+            }
+            if let dest = route.destinationIPv4, !seen.contains(dest) && isValidCandidatePeer(dest, for: tunnel) {
+                seen.insert(dest)
+                candidates.append(CandidatePeer(tunnel: tunnel, ip: dest, mask: route.destinationIPv4Mask))
+            }
         }
 
-        // Priority 1: Destination Gateway from route table
-        for route in tunnel.destinationRoutes {
-            addCandidate(route.gatewayIPv4, mask: "255.255.255.255")
+        if let host = tunnel.linkLayerDestinationIP?.v4?.host {
+            candidates.append(CandidatePeer(tunnel: tunnel, ip: host, mask: "255.255.255.255"))
         }
-        // Priority 2: Target Destination IP from route table (preserves route destination subnet mask)
-        for route in tunnel.destinationRoutes {
-            addCandidate(route.destinationIPv4, mask: route.destinationIPv4Mask)
-        }
-        // Priority 3: Point-to-point link layer destination
-        addCandidate(tunnel.linkLayerDestinationIP?.v4?.host, mask: "255.255.255.255")
 
         return candidates
     }

@@ -11,12 +11,15 @@ import Combine
 import ZIPFoundation
 internal import DeviceGateway
 internal import MinimuxerCommon
+import Logging
 
 private enum MinimuxerStatus{
     case started, inprogress, stopped
 }
 
 final internal class MinimuxerImpl: MinimuxerAPI {
+    public let logger = MinimuxerLogging.logger
+
     public let statusSubject = PassthroughSubject<Result<Bool, MinimuxerError>, Never>()
     public var statusPublisher: AnyPublisher<Result<Bool, MinimuxerError>, Never> {
         statusSubject.eraseToAnyPublisher()
@@ -63,7 +66,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         self.network.onNetworkChanged = { [weak self] in
             guard let self = self else { return }
             let readyResult = await self.isReady()
-            debugLog("[minimuxer] [net] publishing status update to subscribers")
+            logger.debug("[minimuxer] [net] publishing status update to subscribers")
             self.statusSubject.send(readyResult)
         }
     }
@@ -81,8 +84,6 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     private let state = State()
     
     var pairingFileType: PairingProtocol { self.gateway.pairingFileType }
-    
-    var isLoggingEnabled: Bool { MinimuxerLogging.isLoggingEnabled }
     
     var isPairingFileLoaded: Bool {
         return pairingFileType != .unknown
@@ -104,13 +105,13 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     
     func isReady(withNetworkCheck: Bool, withDDIMountCheck: Bool) async -> Result<Bool, MinimuxerError> {
         if !isPairingFileLoaded {
-            debugLog("[minimuxer] minimuxer not ready: pairing file not loaded")
+            logger.debug("[minimuxer] minimuxer not ready: pairing file not loaded")
             return .failure(.pairingNotLoaded("No valid pairing file has been loaded"))
         }
 
         let currentStatus = await state.with { $0.status }
         if currentStatus != .started {
-            debugLog("[minimuxer] minimuxer not ready: minimuxer has not been started")
+            logger.debug("[minimuxer] minimuxer not ready: minimuxer has not been started")
             return .failure(.notStarted("Minimuxer has not been started"))
         }
 
@@ -121,7 +122,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             self.network.isUsbSatisfied       ||
             self.network.isBridgeSatisfied */
         ){
-            debugLog("[minimuxer] minimuxer not ready: no network connection")
+            logger.debug("[minimuxer] minimuxer not ready: no network connection")
             return .failure(.noConnection("No wifi interface satisfied"))
         }
 
@@ -136,14 +137,14 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             case .localVPN:
                 let uTunPresent = net.isUTunAvailable
                 if !uTunPresent {
-                    debugLog("[minimuxer] minimuxer not ready: no utun interface found")
+                    logger.debug("[minimuxer] minimuxer not ready: no utun interface found")
                     return .failure(.noVPN("No utun interface detected — LocalDevVPN is not connected"))
                 }
 
                 // check iKEv2 too if in lockdown mode and ios >= 26.4
                 if self.gateway.pairingFileType != .rppairing && !net.isIKEv2IPSecAvailable {
                     if #available(iOS 26.4, *) {
-                        debugLog("[minimuxer] minimuxer not ready: no ipsec interface (required for lockdown on iOS 26.4+)")
+                        logger.debug("[minimuxer] minimuxer not ready: no ipsec interface (required for lockdown on iOS 26.4+)")
                         return .failure(.invalidVPN("utun is present but no ipsec/IKEv2 interface found — LocalDevVPN may not support the lockdown protocol on iOS 26.4+"))
                     }
                 }
@@ -155,7 +156,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         // check if pairing file is loaded
         let pairingType = pairingFileType
         if pairingType == .unknown {
-            debugLog("[minimuxer] minimuxer not ready: no valid pairing file loaded")
+            logger.debug("[minimuxer] minimuxer not ready: no valid pairing file loaded")
             return .failure(.pairingNotLoaded("No valid pairing file has been loaded in Minimuxer"))
         }
 
@@ -166,24 +167,24 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         } catch {
             switch connectionMode {
                 case .localVPN:
-                    debugLog("[minimuxer] minimuxer not ready: tunnel peer IP not available despite tunnel iface being present")
+                    logger.debug("[minimuxer] minimuxer not ready: tunnel peer IP not available despite tunnel iface being present")
                     return .failure(.noDevice("VPN tunnel iface is up but tunnel peer IP is not yet reachable — VPN may not be routing device traffic correctly. Cause: \(error.localizedDescription)"))
                 case .remoteServer:
-                    debugLog("[minimuxer] minimuxer not ready: remote endpoint IP is not configured or reachable")
+                    logger.debug("[minimuxer] minimuxer not ready: remote endpoint IP is not configured or reachable")
                     return .failure(.noDevice("Remote endpoint IP is not configured or reachable. Cause: \(error.localizedDescription)"))
                 case .notConfigured:
                     return .failure(connectionNotConfiguredError())
             }
         }
         
-        let peerReachable = testDeviceConnection(ifaddr: deviceIp)
+        let peerReachable = await testDeviceConnection(ifaddr: deviceIp)
         if !peerReachable {
             switch connectionMode {
                 case .localVPN:
-                    debugLog("[minimuxer] minimuxer not ready: failed to connect to tunnel peer IP")
+                    logger.debug("[minimuxer] minimuxer not ready: failed to connect to tunnel peer IP")
                     return .failure(.invalidVPN("VPN tunnel iface is up and tunnel peer IP \(deviceIp) is known, but TCP port poll failed — device may be unreachable on this interface"))
                 case .remoteServer:
-                    debugLog("[minimuxer] minimuxer not ready: failed to connect to remote endpoint IP \(deviceIp)")
+                    logger.debug("[minimuxer] minimuxer not ready: failed to connect to remote endpoint IP \(deviceIp)")
                     return .failure(.notReachable("Remote endpoint \(deviceIp) is configured, but TCP port poll failed — target device is unreachable"))
                 case .notConfigured:
                     return .failure(connectionNotConfiguredError())
@@ -197,11 +198,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             return .failure(error)
         }
 
-        verboseLog(
-            "minimuxer status (.\(activeProtocol)): " +
-            "deviceUDID=\(deviceUDID) " +
-            "started=\(self.proxyServer.isListening) "
-        )
+        logger.trace("minimuxer status (.\(activeProtocol)): deviceUDID=\(deviceUDID) started=\(self.proxyServer.isListening) ")
 
         if self.gateway.requiresUsbmuxd && !self.proxyServer.isListening {
             return .failure(.muxerNotListening("Usbmuxd fake server is not listening"))
@@ -210,7 +207,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         if withDDIMountCheck {
             do {
                 let isMounted = try await isDDIMounted()
-                verboseLog("minimuxer status (.\(activeProtocol)): dmg=\(isMounted) started=\(self.proxyServer.isListening)")
+                logger.trace("minimuxer status (.\(activeProtocol)): dmg=\(isMounted) started=\(self.proxyServer.isListening)")
                 return .success(isMounted)
             } catch {
                 return .failure(error)
@@ -232,31 +229,30 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
     }
 
-    func setLogging(_ enabled: Bool) {
-        MinimuxerLogging.setLogging(enabled)
-        self.gateway.setLogging(enabled)
-    }
-
     public var deviceProbeTimeout: Int {
-        self.connectionManager.deviceProbeTimeout
+         get async {
+            await self.connectionManager.deviceProbeTimeout
+        }
     }
 
     func setDeviceProbeTimeout(_ timeoutMs: Int) {
-        self.connectionManager.deviceProbeTimeout = timeoutMs
+        Task {
+            await connectionManager.setDeviceProbeTimeout(timeoutMs)
+        }
     }
     
     private func retargetUsbmuxdAddr() {
-        verboseLog("[minimuxer] unsetenv(USBMUXD_SOCKET_ADDRESS)")
+        logger.trace("[minimuxer] unsetenv(USBMUXD_SOCKET_ADDRESS)")
         unsetenv(MinimuxerConstants.usbmuxdEnvKey)
-        verboseLog("[minimuxer] setenv(USBMUXD_SOCKET_ADDRESS, \(MinimuxerConstants.usbmuxdSocket))")
+        logger.trace("[minimuxer] setenv(USBMUXD_SOCKET_ADDRESS, \(MinimuxerConstants.usbmuxdSocket))")
         setenv(MinimuxerConstants.usbmuxdEnvKey, MinimuxerConstants.usbmuxdSocket, 1)
         let value = String(cString: getenv(MinimuxerConstants.usbmuxdEnvKey))
-        verboseLog("[minimuxer] getenv(USBMUXD_SOCKET_ADDRESS) = \(value)")
+        logger.trace("[minimuxer] getenv(USBMUXD_SOCKET_ADDRESS) = \(value)")
     }
     
     private func connectionNotConfiguredError() -> MinimuxerError{
         let modes: [DeviceConnectionMode] = [.localVPN, .remoteServer]
-        debugLog("[minimuxer] minimuxer not ready: connection mode not configured. Supported modes: \(modes)")
+        logger.debug("[minimuxer] minimuxer not ready: connection mode not configured. Supported modes: \(modes)")
         return MinimuxerError.connectionModeNotConfigured("Connection mode not configured. Supported modes: \(modes)")
     }
     
@@ -264,13 +260,13 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     private func restartMuxerServer() async throws(MinimuxerError) {
         guard self.gateway.requiresUsbmuxd else { return }
         guard let pairingDict = self.gateway.pairingDataDict else {
-            debugLog("[minimuxer] ERROR: Pairing DICT missing...ignoring restart MuxerServer")
+            logger.debug("[minimuxer] ERROR: Pairing DICT missing...ignoring restart MuxerServer")
             throw MinimuxerError.pairingNotLoaded("Pairing dictionary is missing in gateway")
         }
-        verboseLog("[minimuxer] loaded pairing file keys: \(pairingDict.keys)")
+        logger.trace("[minimuxer] loaded pairing file keys: \(pairingDict.keys)")
 
         guard let deviceUDID = pairingDict["UDID"] as? String else {
-            debugLog("[minimuxer] ERROR: Pairing file missing UDID")
+            logger.debug("[minimuxer] ERROR: Pairing file missing UDID")
             throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: "Pairing file is missing UDID value")
         }
 
@@ -348,12 +344,12 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     func restart() async throws(MinimuxerError) {
-        verboseLog("[minimuxer] Restarting services...")
+        logger.trace("[minimuxer] Restarting services...")
         let activeProtocol = self.gateway.pairingFileType
         guard let pairingData = self.gateway.pairingFileData,
               let pairingFile = String(data: pairingData, encoding: .utf8) else
         {
-            debugLog("[minimuxer] restart: no existing pairing file — cannot restart")
+            logger.debug("[minimuxer] restart: no existing pairing file — cannot restart")
             throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: "No existing pairing file found in gateway during restart")
         }
         try await restartWith(pairingFile: pairingFile, op: "restart")
@@ -361,7 +357,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     func reinitializePairingData(pairingFile: String) async throws(MinimuxerError) {
-        verboseLog("[minimuxer] Reinitializing with new pairing file...")
+        logger.trace("[minimuxer] Reinitializing with new pairing file...")
         try await restartWith(pairingFile: pairingFile, op: "reinitializePairingData")
     }
   
@@ -379,7 +375,7 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             let activeProtocol = self.gateway.pairingFileType
             throw MinimuxerError.mount(protocol: activeProtocol, reason: "DDI mount path not set")
         }
-        verboseLog("[minimuxer] DDI not mounted, mounting now before launching debug session...")
+        logger.trace("[minimuxer] DDI not mounted, mounting now before launching debug session...")
         try await self.mountDDI(docsPath: mountPath)
     }
 
@@ -484,21 +480,21 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         try await runWithChecks("while dumping profiles", catchAll: MinimuxerError.createMisagent) {
             switch mode {
                 case .raw:
-                    verboseLog("[minimuxer] dumpProfiles(mode: .raw) dumping to: \(docsPath)")
+                    self.logger.trace("[minimuxer] dumpProfiles(mode: .raw) dumping to: \(docsPath)")
                     return try await self.gateway.dumpProfiles(docsPath: docsPath)
                 case .zip:
-                    verboseLog("[minimuxer] dumpProfiles(mode: .zip) staging to temporary directory")
+                    self.logger.trace("[minimuxer] dumpProfiles(mode: .zip) staging to temporary directory")
                     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
                     defer {
-                        verboseLog("[minimuxer] dumpProfiles(mode: .zip) cleaning up temporary directory: \(tempDir.path)")
+                        self.logger.trace("[minimuxer] dumpProfiles(mode: .zip) cleaning up temporary directory: \(tempDir.path)")
                         try? FileManager.default.removeItem(at: tempDir)
                     }
 
                     let dumpedPath = try await self.gateway.dumpProfiles(docsPath: tempDir.path)
                     let zipURL = URL(fileURLWithPath: docsPath).appendingPathComponent("Profiles-\(ISO8601DateFormatter().string(from: Date())).zip")
-                    verboseLog("[minimuxer] dumpProfiles(mode: .zip) compressing \(dumpedPath) -> \(zipURL.path)")
+                    self.logger.trace("[minimuxer] dumpProfiles(mode: .zip) compressing \(dumpedPath) -> \(zipURL.path)")
                     try FileManager.default.zipItem(at: URL(fileURLWithPath: dumpedPath), to: zipURL, shouldKeepParent: false)
-                    verboseLog("[minimuxer] dumpProfiles(mode: .zip) successfully created archive: \(zipURL.path)")
+                    self.logger.trace("[minimuxer] dumpProfiles(mode: .zip) successfully created archive: \(zipURL.path)")
                     return zipURL.path
             }
         }

@@ -10,6 +10,7 @@ import Foundation
 import ZIPFoundation
 internal import DeviceGateway
 internal import MinimuxerCommon
+import Logging
 
 final internal class Mounter {
     let deviceProvider: DeviceProvider
@@ -18,6 +19,7 @@ final internal class Mounter {
     }
     let proxyServer: UsbmuxdProxyServer
     let endpoint: DeviceEndpoint
+    let logger = Logger(label: "minimuxer.mounter")
 
     init(deviceProvider: DeviceProvider, proxyServer: UsbmuxdProxyServer, endpoint: DeviceEndpoint) {
         self.deviceProvider = deviceProvider
@@ -35,13 +37,13 @@ final internal class Mounter {
 
         // Prerequisite: device must be reachable
         guard (try? await self.endpoint.ip()) != nil else {
-            debugLog("[minimuxer] mounter: device IP not available")
+            logger.debug("[minimuxer] mounter: device IP not available")
             throw MinimuxerError.noDevice("Reachable device IP not found")
         }
 
         let isDDIMounted = try await self.gateway.isDDIMounted()
         if isDDIMounted {
-            verboseLog("[minimuxer] mounter: DeveloperDiskImage is already mounted. Bypassing mount.")
+            logger.trace("[minimuxer] mounter: DeveloperDiskImage is already mounted. Bypassing mount.")
             return false
         }
 
@@ -53,7 +55,7 @@ final internal class Mounter {
             guard let firstComponent = v.split(separator: ".").first,
                   let parsedMajor = Int(firstComponent) else 
             {
-                debugLog("[minimuxer] mounter: failed to parse major iOS version from ProductVersion '\(v)'")
+                logger.debug("[minimuxer] mounter: failed to parse major iOS version from ProductVersion '\(v)'")
                 throw MinimuxerError.invalidProductVersion(v)
             }
             versionStr = v
@@ -68,21 +70,21 @@ final internal class Mounter {
         if major < 17, let iosVersion {
             // Pre-17: lockdown only — load DMG + signature, mount via imagemounter
             let (dmgData, sigData) = try loadPre17Image(iosVersion: iosVersion, dmgDocsPath: dmgDocsPath)
-            verboseLog("[minimuxer] Uploading and mounting image (dmg=\(dmgData.count) bytes, sig=\(sigData.count) bytes)...")
+            logger.trace("[minimuxer] Uploading and mounting image (dmg=\(dmgData.count) bytes, sig=\(sigData.count) bytes)...")
             try await self.gateway.mountDeveloperImage(image: dmgData, signature: sigData)
-            verboseLog("[minimuxer] Successfully mounted the image")
+            logger.trace("[minimuxer] Successfully mounted the image")
         } else {
             // Post-17: both RP and lockdown use mountPersonalizedDdi.
             // IdeviceGateway handles the RP vs lockdown distinction internally.
             let (imageData, trustcacheData, manifestData) = try loadPost17Image(dmgDocsPath: dmgDocsPath)
-            debugLog(
+            logger.debug(Logger.Message(stringLiteral:
                 "[minimuxer] Mounting DDI " +
                 "(image=\(imageData.count) bytes, " +
                 "trustcache=\(trustcacheData.count) bytes, " +
                 "manifest=\(manifestData.count) bytes)"
-            )
+            ))
             try await self.gateway.mountPersonalizedDdi(image: imageData, trustcache: trustcacheData, manifest: manifestData)
-            verboseLog("[minimuxer] DDI mounted successfully")
+            logger.trace("[minimuxer] DDI mounted successfully")
         }
     }
 
@@ -90,9 +92,9 @@ final internal class Mounter {
         if FileManager.default.fileExists(atPath: localURL.path) {
             return try Data(contentsOf: localURL)
         }
-        verboseLog("[minimuxer] Downloading \(localURL.lastPathComponent)...")
+        logger.trace("[minimuxer] Downloading \(localURL.lastPathComponent)...")
         guard let data = try? Data(contentsOf: url) else {
-            debugLog("[minimuxer] ERROR: Failed to download \(localURL.lastPathComponent)")
+            logger.debug("[minimuxer] ERROR: Failed to download \(localURL.lastPathComponent)")
             throw MinimuxerError.downloadImage("Failed to download file from \(url.absoluteString)")
         }
         try data.write(to: localURL)
@@ -102,18 +104,18 @@ final internal class Mounter {
     private func loadPre17Image(iosVersion: String, dmgDocsPath: String) throws -> (Data, Data) {
         let dmgURL = URL(fileURLWithPath: "\(dmgDocsPath)/\(iosVersion).dmg")
         let sigURL = URL(fileURLWithPath: "\(dmgDocsPath)/\(iosVersion).dmg.signature")
-        verboseLog("[minimuxer] Pre17 DMG: \(dmgURL.path)")
-        verboseLog("[minimuxer] Pre17 Signature: \(sigURL.path)")
+        logger.trace("[minimuxer] Pre17 DMG: \(dmgURL.path)")
+        logger.trace("[minimuxer] Pre17 Signature: \(sigURL.path)")
 
         if !FileManager.default.fileExists(atPath: dmgURL.path) || !FileManager.default.fileExists(atPath: sigURL.path) {
-            verboseLog("[minimuxer] Downloading iOS \(iosVersion) DMG...")
+            logger.trace("[minimuxer] Downloading iOS \(iosVersion) DMG...")
             guard let url = URL(string: MinimuxerConstants.pre17VersionsURL),
                   let data = try? Data(contentsOf: url),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: String],
                   let dmgUrlStr = json[iosVersion],
                   let dmgUrl = URL(string: dmgUrlStr) else 
             {
-                debugLog("[minimuxer] ERROR: Unable to download DMG dictionary or find version")
+                logger.debug("[minimuxer] ERROR: Unable to download DMG dictionary or find version")
                 throw MinimuxerError.downloadImage("Failed to retrieve pre-17 versions plist or find iOS \(iosVersion) DMG URL")
             }
 
@@ -145,11 +147,11 @@ final internal class Mounter {
             }
         }
 
-        verboseLog("[minimuxer] Reading pre-17 image files into memory")
+        logger.trace("[minimuxer] Reading pre-17 image files into memory")
         guard let dmgData = try? Data(contentsOf: dmgURL),
               let sigData = try? Data(contentsOf: sigURL) else 
         {
-            debugLog("[minimuxer] ERROR: Unable to read developer disk image or signature files")
+            logger.debug("[minimuxer] ERROR: Unable to read developer disk image or signature files")
             throw MinimuxerError.mount(protocol: .lockdown, reason: "Unable to read pre-17 image files at: \(dmgURL.path)")
         }
         return (dmgData, sigData)
@@ -161,7 +163,7 @@ final internal class Mounter {
               let tcURL = URL(string: MinimuxerConstants.ddiTrustcacheURL),
               let mftURL = URL(string: MinimuxerConstants.ddiManifestURL) else 
         {
-            debugLog("[minimuxer] ERROR: Invalid post-17 DDI URLs configured")
+            logger.debug("[minimuxer] ERROR: Invalid post-17 DDI URLs configured")
             throw MinimuxerError.downloadImage("Invalid post-17 DDI URLs configured")
         }
 

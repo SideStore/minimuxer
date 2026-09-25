@@ -86,9 +86,8 @@ public struct ConnectionConfigBinding: Sendable {
 
 public protocol MinimuxerAPI: AnyObject {
     var pairingFileType: PairingProtocol { get }
-    var isLoggingEnabled: Bool { get }
     var isPairingFileLoaded: Bool { get }
-    var deviceProbeTimeout: Int { get }
+    var deviceProbeTimeout: Int { get async }
     
     var statusPublisher: AnyPublisher<Result<Bool, MinimuxerError>, Never> { get }
     
@@ -96,8 +95,7 @@ public protocol MinimuxerAPI: AnyObject {
     func isReady(withNetworkCheck: Bool, withDDIMountCheck: Bool) async -> Result<Bool, MinimuxerError>
     func describeError(_ error: MinimuxerError) -> String
     func bindConnectionConfig(_ binding: ConnectionConfigBinding) async
-    func setLogging(_ enabled: Bool)
-    func setDeviceProbeTimeout(_ timeoutMs: Int)
+    func setDeviceProbeTimeout(_ timeoutMs: Int) async
 
     func start(pairingFile: String, mountPath: String, preferred: PairingProtocol?) async throws
     func stop() async throws
@@ -135,8 +133,8 @@ public extension MinimuxerAPI {
         await isReady(withNetworkCheck: withNetworkCheck, withDDIMountCheck: withDDIMountCheck)
     }
 
-    func testDeviceConnection(ifaddr: String) -> Bool {
-        testDeviceConnection(ifaddr: ifaddr, timeout: self.deviceProbeTimeout)
+    func testDeviceConnection(ifaddr: String) async -> Bool {
+        await testDeviceConnection(ifaddr: ifaddr, timeout: self.deviceProbeTimeout)
     }
 
     func dumpProfiles(docsPath: String, mode: ProfileDumpMode = .zip) async throws -> String {
@@ -232,7 +230,9 @@ public final class Minimuxer: MinimuxerFacade, @unchecked Sendable {
 
         if let newTimeout = params.deviceProbeTimeout, newTimeout != Self.currentDeviceProbeTimeout {
             Self.currentDeviceProbeTimeout = newTimeout
-            self.core.setDeviceProbeTimeout(newTimeout)
+            Task {
+                await self.core.setDeviceProbeTimeout(newTimeout)
+            }
         }
 
         return self

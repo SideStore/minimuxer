@@ -29,6 +29,8 @@ final internal class WirelessPairService: WirelessPairAPI {
     var onPinReceived: ((String) -> Void)?
     var onReadyToPair: ((String, Int) -> Void)?
     var onRequestPin: ((@escaping (String) -> Void) -> Void)?
+
+    let logger = DeviceGatewayLogging.logger
     
     init(deviceProvider: DeviceProvider) {
         self.deviceProvider = deviceProvider
@@ -41,10 +43,10 @@ final internal class WirelessPairService: WirelessPairAPI {
         resolveFileName: (@Sendable (String, String) -> String)? = nil,
         completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
     ) {
-        debugLog("[WirelessPairService] start() invoked (hostName='\(hostName)', hostModel='\(hostModel)', outPath='\(outPath)')")
+        logger.debug("[WirelessPairService] start() invoked (hostName='\(hostName)', hostModel='\(hostModel)', outPath='\(outPath)')")
         startLock.withLock {
             if activeStartTask != nil {
-                debugLog("[WirelessPairService] start() cancelling existing activeStartTask")
+                logger.debug("[WirelessPairService] start() cancelling existing activeStartTask")
                 activeStartTask?.cancel()
                 activeStartTask = nil
             }
@@ -55,7 +57,7 @@ final internal class WirelessPairService: WirelessPairAPI {
             
             let outcome: Result<PairedDeviceRecord, Swift.Error>
             do {
-                debugLog("[WirelessPairService] Calling gateway.startWirelessPair...")
+                logger.debug("[WirelessPairService] Calling gateway.startWirelessPair...")
                 let pairedDevice = try await self.gateway.startWirelessPair(
                     hostName: hostName,
                     hostModel: hostModel,
@@ -63,7 +65,7 @@ final internal class WirelessPairService: WirelessPairAPI {
                     resolveFileName: resolveFileName,
                     onReady: { [weak self] serviceID, port, txtRecords in
                         guard let self = self else { return }
-                        debugLog("[WirelessPairService] gateway onReady callback (serviceID='\(serviceID)', port=\(port), txtCount=\(txtRecords.count))")
+                        logger.debug("[WirelessPairService] gateway onReady callback (serviceID='\(serviceID)', port=\(port), txtCount=\(txtRecords.count))")
                         var txt: [String: Data] = [:]
                         for (k, v) in txtRecords {
                             txt[k] = Data(v.utf8)
@@ -74,16 +76,16 @@ final internal class WirelessPairService: WirelessPairAPI {
                     },
                     onPin: { [weak self] pinString in
                         guard let self = self else { return }
-                        debugLog("[WirelessPairService] gateway onPin callback (pin='\(pinString)')")
+                        logger.debug("[WirelessPairService] gateway onPin callback (pin='\(pinString)')")
                         Task { @MainActor in
                             self.onPinReceived?(pinString)
                         }
                     }
                 )
-                debugLog("[WirelessPairService] gateway.startWirelessPair SUCCEEDED with device: \(pairedDevice.name) (\(pairedDevice.pairingFilePath))")
+                logger.debug("[WirelessPairService] gateway.startWirelessPair SUCCEEDED with device: \(pairedDevice.name) (\(pairedDevice.pairingFilePath))")
                 outcome = .success(pairedDevice)
             } catch {
-                debugLog("[WirelessPairService] gateway.startWirelessPair FAILED with error: \(error)")
+                logger.debug("[WirelessPairService] gateway.startWirelessPair FAILED with error: \(error)")
                 outcome = .failure(error)
             }
             
@@ -111,11 +113,11 @@ final internal class WirelessPairService: WirelessPairAPI {
         completion: @escaping (Result<PairedDeviceRecord, Swift.Error>) -> Void
     ) {
         let socketKey = "\(targetIp):\(targetPort)"
-        debugLog("[WirelessPairService] trigger() invoked for \(socketKey) (outPath='\(outPath)')")
+        logger.debug("[WirelessPairService] trigger() invoked for \(socketKey) (outPath='\(outPath)')")
         
         triggerLock.withLock {
             if let existing = activeTriggerTasks[socketKey] {
-                debugLog("[WirelessPairService] trigger() cancelling existing activeTriggerTask for \(socketKey)")
+                logger.debug("[WirelessPairService] trigger() cancelling existing activeTriggerTask for \(socketKey)")
                 existing.cancel()
                 activeTriggerTasks.removeValue(forKey: socketKey)
             }
@@ -126,7 +128,7 @@ final internal class WirelessPairService: WirelessPairAPI {
             
             let outcome: Result<PairedDeviceRecord, Swift.Error>
             do {
-                debugLog("[WirelessPairService] Calling gateway.triggerWirelessPair for \(socketKey)...")
+                logger.debug("[WirelessPairService] Calling gateway.triggerWirelessPair for \(socketKey)...")
                 let pairedDevice = try await self.gateway.triggerWirelessPair(
                     targetIp: targetIp,
                     targetPort: targetPort,
@@ -136,7 +138,7 @@ final internal class WirelessPairService: WirelessPairAPI {
                     resolveFileName: resolveFileName,
                     onRequestPin: { [weak self] submitPin in
                         guard let self = self else { return }
-                        debugLog("[WirelessPairService] gateway trigger onRequestPin callback invoked")
+                        logger.debug("[WirelessPairService] gateway trigger onRequestPin callback invoked")
                         Task { @MainActor in
                             if let onRequestPin = self.onRequestPin {
                                 onRequestPin(submitPin)
@@ -146,10 +148,10 @@ final internal class WirelessPairService: WirelessPairAPI {
                         }
                     }
                 )
-                debugLog("[WirelessPairService] gateway.triggerWirelessPair SUCCEEDED with device: \(pairedDevice.name) (\(pairedDevice.pairingFilePath))")
+                logger.debug("[WirelessPairService] gateway.triggerWirelessPair SUCCEEDED with device: \(pairedDevice.name) (\(pairedDevice.pairingFilePath))")
                 outcome = .success(pairedDevice)
             } catch {
-                debugLog("[WirelessPairService] gateway.triggerWirelessPair FAILED with error: \(error)")
+                logger.debug("[WirelessPairService] gateway.triggerWirelessPair FAILED with error: \(error)")
                 outcome = .failure(error)
             }
             
@@ -167,7 +169,7 @@ final internal class WirelessPairService: WirelessPairAPI {
     }
     
     func stop() {
-        debugLog("[WirelessPairService] stop() invoked")
+        logger.debug("[WirelessPairService] stop() invoked")
         startLock.withLock {
             activeStartTask?.cancel()
             activeStartTask = nil
@@ -175,7 +177,7 @@ final internal class WirelessPairService: WirelessPairAPI {
         
         triggerLock.withLock {
             for (key, task) in activeTriggerTasks {
-                debugLog("[WirelessPairService] stop() cancelling active trigger task for \(key)")
+                logger.debug("[WirelessPairService] stop() cancelling active trigger task for \(key)")
                 task.cancel()
             }
             activeTriggerTasks.removeAll()
@@ -185,7 +187,7 @@ final internal class WirelessPairService: WirelessPairAPI {
     }
     
     fileprivate func startAdvertising(serviceID: String, port: Int, txt: [String: Data]) {
-        debugLog("[WirelessPairService] startAdvertising() serviceID='\(serviceID)', port=\(port), domain='\(MinimuxerConstants.defaultAdDomain)', type='\(MinimuxerConstants.remotePairingPairableHostServiceType)'")
+        logger.debug("[WirelessPairService] startAdvertising() serviceID='\(serviceID)', port=\(port), domain='\(MinimuxerConstants.defaultAdDomain)', type='\(MinimuxerConstants.remotePairingPairableHostServiceType)'")
         stopAdvertising()
         let service = NetService(
             domain: MinimuxerConstants.defaultAdDomain,
@@ -201,7 +203,7 @@ final internal class WirelessPairService: WirelessPairAPI {
     
     private func stopAdvertising() {
         if let ns = netService {
-            debugLog("[WirelessPairService] stopAdvertising() stopping NetService '\(ns.name)'")
+            logger.debug("[WirelessPairService] stopAdvertising() stopping NetService '\(ns.name)'")
             ns.stop()
             netService = nil
         }

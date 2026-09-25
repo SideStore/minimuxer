@@ -35,7 +35,6 @@ public protocol DeviceGateway: AnyObject, Sendable {
     func start(pairingFileContent: String, preferred: PairingProtocol?) async throws
     func stop() async throws
     func setDeviceEndpointIp(_ ip: String?)
-    func setLogging(_ enabled: Bool)
 
     func fetchUDID() async throws -> String
     func getLockdownValue(key: String) async throws -> String

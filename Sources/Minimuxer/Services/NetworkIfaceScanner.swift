@@ -10,6 +10,8 @@
 
 import Foundation
 import Darwin
+internal import DeviceGateway
+import Logging
 
 // MARK: - IPv4 helpers
 
@@ -591,7 +593,7 @@ internal enum NetworkIfaceScanner {
     // MARK: scan
     static func scan(quiet: Bool = false) -> Set<NetInfo> {
         if !quiet {
-            debugLog("[minimuxer] [iface] scan requested...")
+            DeviceGatewayLogging.logger.debug("[minimuxer] [iface] scan requested...")
         }
         
         var head: UnsafeMutablePointer<ifaddrs>? = nil
@@ -692,8 +694,8 @@ internal enum NetworkIfaceScanner {
         }
         
         if !quiet {
-            verboseLog(formatNetInfoList(result))
-            debugLog("[minimuxer] [iface] total: \(result.count)")
+            DeviceGatewayLogging.logger.trace(Logger.Message(stringLiteral: formatNetInfoList(result)))
+            DeviceGatewayLogging.logger.debug("[minimuxer] [iface] total: \(result.count)")
         }
         return result
     }

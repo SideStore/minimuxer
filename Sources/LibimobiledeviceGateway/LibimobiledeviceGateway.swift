@@ -47,12 +47,12 @@ private enum OpenSSLInitResult: String, CustomStringConvertible {
 
 private func getOpenSSLErrors() -> [String] {
     var errors: [String] = []
-    while true {
-        let errCode = ERR_get_error()
-        guard errCode != 0 else { break }
+    var errCode = ERR_get_error()
+    while errCode != 0 {
         var buf = [CChar](repeating: 0, count: 256)
         ERR_error_string_n(errCode, &buf, buf.count)
         errors.append(String(cString: buf))
+        errCode = ERR_get_error()
     }
     return errors
 }
@@ -76,6 +76,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
     public static let shared = LibimobiledeviceGateway()
     public let requiresUsbmuxd: Bool = true
 
+    private var ossl: Bool = false
     private var cachedUDID: String? = nil
     private var rpIdentity: rppairing_identity_t? = nil
     private var activeTunnel: rppairing_tunnel_t? = nil
@@ -83,24 +84,33 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
     private var activeRsd: rppairing_rsd_t? = nil
 
     public override init() {
+        #if DEBUG
+        idevice_set_debug_level(1)
+        rppairing_set_debug_level(1)
+        #endif
+        try! super.init()
+    }
+
+    func initossl() {
+        if ossl { return }
         let sslOpts = UInt64(OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS | OPENSSL_INIT_ADD_ALL_CIPHERS | OPENSSL_INIT_ADD_ALL_DIGESTS)
         let sslRes = OpenSSLInitResult(code: OPENSSL_init_ssl(sslOpts, nil))
         let sslErrs = getOpenSSLErrors()
-        debugLog("[LibimobiledeviceGateway] OPENSSL_init_ssl: \(sslRes)\(sslErrs.isEmpty ? "" : " (errors: \(sslErrs.joined(separator: ", ")))")")
+        logger.debug("[LibimobiledeviceGateway] OPENSSL_init_ssl: \(sslRes)\(sslErrs.isEmpty ? "" : " (errors: \(sslErrs.joined(separator: ", ")))")")
 
         let cryptoOpts = UInt64(OPENSSL_INIT_LOAD_CRYPTO_STRINGS | OPENSSL_INIT_ADD_ALL_CIPHERS | OPENSSL_INIT_ADD_ALL_DIGESTS)
         let cryptoRes = OpenSSLInitResult(code: OPENSSL_init_crypto(cryptoOpts, nil))
         let cryptoErrs = getOpenSSLErrors()
-        debugLog("[LibimobiledeviceGateway] OPENSSL_init_crypto: \(cryptoRes)\(cryptoErrs.isEmpty ? "" : " (errors: \(cryptoErrs.joined(separator: ", ")))")")
+        logger.debug("[LibimobiledeviceGateway] OPENSSL_init_crypto: \(cryptoRes)\(cryptoErrs.isEmpty ? "" : " (errors: \(cryptoErrs.joined(separator: ", ")))")")
 
         let defaultProv = OSSL_PROVIDER_load(nil, "default")
         let defaultErrs = getOpenSSLErrors()
-        debugLog("[LibimobiledeviceGateway] OSSL_PROVIDER_load('default'): \(String(describing: defaultProv))\(defaultErrs.isEmpty ? "" : " (errors: \(defaultErrs.joined(separator: ", ")))")")
+        logger.debug("[LibimobiledeviceGateway] OSSL_PROVIDER_load('default'): \(String(describing: defaultProv))\(defaultErrs.isEmpty ? "" : " (errors: \(defaultErrs.joined(separator: ", ")))")")
 
         let baseProv = OSSL_PROVIDER_load(nil, "base")
         let baseErrs = getOpenSSLErrors()
-        debugLog("[LibimobiledeviceGateway] OSSL_PROVIDER_load('base'): \(String(describing: baseProv))\(baseErrs.isEmpty ? "" : " (errors: \(baseErrs.joined(separator: ", ")))")")
-        try! super.init()
+        logger.debug("[LibimobiledeviceGateway] OSSL_PROVIDER_load('base'): \(String(describing: baseProv))\(baseErrs.isEmpty ? "" : " (errors: \(baseErrs.joined(separator: ", ")))")")
+        ossl = true
     }
 
     deinit {
@@ -108,7 +118,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
     }
 
     public override func cleanup() {
-        debugLog("[LibimobiledeviceGateway] cleanup() called")
+        logger.debug("[LibimobiledeviceGateway] cleanup() called")
         self.cachedUDID = nil
         rpIdentity = nil
         super.cleanup()
@@ -125,13 +135,8 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
         try await super.stop()
     }
 
-    public override func setLogging(_ enabled: Bool) {
-        super.setLogging(enabled)
-        idevice_set_debug_level(enabled ? 1 : 0)
-        rppairing_set_debug_level(enabled ? 1 : 0)
-    }
-
     private func verifyInitialized() throws {
+        initossl()
         guard isInitialized, cachedUDID != nil else {
             throw LibimobiledeviceGatewayError(.notInitialized)
         }
@@ -139,7 +144,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
 
     private func requireDeviceEndpointIp() throws -> String {
         guard let ip = self.deviceEndpointIp, !ip.isEmpty else {
-            debugLog("[LibimobiledeviceGateway] operation failed because deviceEndpointIp is nil or empty")
+            logger.debug("[LibimobiledeviceGateway] operation failed because deviceEndpointIp is nil or empty")
             throw LibimobiledeviceGatewayError(.deviceEndpointIpNotAvailable, reason: "Device endpoint IP has not been configured")
         }
         return ip
@@ -162,10 +167,10 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
         var mutIdentity = identity
         let connErr = rppairing_pair_verify(client, &mutIdentity)
         guard connErr == RPPAIRING_E_SUCCESS else {
-            debugLog("[LibimobiledeviceGateway] rppairing_pair_verify failed with code: \(connErr.rawValue)")
+            logger.debug("[LibimobiledeviceGateway] rppairing_pair_verify failed with code: \(connErr.rawValue)")
             throw LibimobiledeviceGatewayError(.connectionFailed, reason: "rppairing_pair_verify failed: code \(connErr.rawValue)")
         }
-        debugLog("[LibimobiledeviceGateway] rppairing_pair_verify succeeded!")
+        logger.debug("[LibimobiledeviceGateway] rppairing_pair_verify succeeded!")
 
         return try body(client)
     }
@@ -190,31 +195,31 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
         cleanupRPTunnel()
 
         let host = try requireDeviceEndpointIp()
-        debugLog("[LibimobiledeviceGateway] withRPTunnel: connecting fresh tunnel to host \(host)...")
+        logger.debug("[LibimobiledeviceGateway] withRPTunnel: connecting fresh tunnel to host \(host)...")
 
         return try withRPClient { client in
             var tunnelPort: UInt16 = 0
             let listErr = rppairing_create_tunnel_listener(client, &tunnelPort)
             guard listErr == RPPAIRING_E_SUCCESS else {
-                debugLog("[LibimobiledeviceGateway] rppairing_create_tunnel_listener failed: \(listErr.rawValue)")
+                logger.debug("[LibimobiledeviceGateway] rppairing_create_tunnel_listener failed: \(listErr.rawValue)")
                 throw LibimobiledeviceGatewayError(.serviceError, reason: "rppairing_create_tunnel_listener failed: code \(listErr.rawValue)")
             }
-            debugLog("[LibimobiledeviceGateway] tunnel listener created on port: \(tunnelPort)")
+            logger.debug("[LibimobiledeviceGateway] tunnel listener created on port: \(tunnelPort)")
 
             var psk = [UInt8](repeating: 0, count: 64)
             var pskLen = psk.count
             let keyErr = rppairing_get_encryption_key(client, &psk, &pskLen)
             guard keyErr == RPPAIRING_E_SUCCESS else {
-                debugLog("[LibimobiledeviceGateway] rppairing_get_encryption_key failed: \(keyErr.rawValue)")
+                logger.debug("[LibimobiledeviceGateway] rppairing_get_encryption_key failed: \(keyErr.rawValue)")
                 throw LibimobiledeviceGatewayError(.serviceError, reason: "rppairing_get_encryption_key failed: code \(keyErr.rawValue)")
             }
-            debugLog("[LibimobiledeviceGateway] encryption key retrieved (\(pskLen) bytes)")
+            logger.debug("[LibimobiledeviceGateway] encryption key retrieved (\(pskLen) bytes)")
 
             var tunnelInfo = rppairing_tunnel_info_t()
             var tunnel: rppairing_tunnel_t? = nil
             let tunErr = rppairing_tunnel_connect(host, tunnelPort, psk, pskLen, &tunnelInfo, &tunnel)
             guard tunErr == RPPAIRING_E_SUCCESS, let tunnel = tunnel else {
-                debugLog("[LibimobiledeviceGateway] rppairing_tunnel_connect failed: \(tunErr.rawValue)")
+                logger.debug("[LibimobiledeviceGateway] rppairing_tunnel_connect failed: \(tunErr.rawValue)")
                 throw LibimobiledeviceGatewayError(.connectionFailed, reason: "rppairing_tunnel_connect failed: code \(tunErr.rawValue)")
             }
 
@@ -228,7 +233,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                 ptr.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) }
             }
 
-            debugLog("""
+            logger.debug("""
             [LibimobiledeviceGateway] [RPPairing] Tunnel connected successfully!
               • server_address : \(serverAddr)
               • server_rsd_port: \(tunnelInfo.server_rsd_port)
@@ -268,7 +273,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                 throw LibimobiledeviceGatewayError(.serviceError, reason: "RSD service \(service.rawValue) not found or port invalid (code \(portErr.rawValue))")
             }
 
-            debugLog("[LibimobiledeviceGateway] Connecting to RSD service \(service.rawValue) on port \(servicePort)...")
+            logger.debug("[LibimobiledeviceGateway] Connecting to RSD service \(service.rawValue) on port \(servicePort)...")
             var stream: rppairing_service_stream_t? = nil
             let streamErr = rppairing_connect_service_stream(tunnel, servicePort, &stream)
             guard streamErr == RPPAIRING_E_SUCCESS, let stream = stream else {
@@ -283,9 +288,9 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                 "Request": "RSDCheckin"
             ])
             let checkinResp = try rsdRecvPlist(stream)
-            debugLog("[LibimobiledeviceGateway] RSDCheckin response: \(checkinResp)")
+            logger.debug("[LibimobiledeviceGateway] RSDCheckin response: \(checkinResp)")
             let startServiceResp = try rsdRecvPlist(stream)
-            debugLog("[LibimobiledeviceGateway] StartService response: \(startServiceResp)")
+            logger.debug("[LibimobiledeviceGateway] StartService response: \(startServiceResp)")
 
             return try action(stream)
         }
@@ -373,7 +378,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
     }
 
     func syncStart(pairingFileContent: String, preferred: PairingProtocol?) throws {
-        debugLog("[LibimobiledeviceGateway] start() called")
+        logger.debug("[LibimobiledeviceGateway] start() called")
         cleanup()
 
         let pairingFile = try PairingFileParser.parse(content: pairingFileContent, preferred: preferred)
@@ -399,7 +404,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
 
         setInitialized(true)
 
-        debugLog("[LibimobiledeviceGateway] Initialized successfully with \(pairingFile.mode.rawValue) pairing")
+        logger.debug("[LibimobiledeviceGateway] Initialized successfully with \(pairingFile.mode.rawValue) pairing")
     }
 
     func syncFetchUDID() throws -> String {
@@ -407,12 +412,12 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
         do {
             let hwUdid = try syncGetLockdownValue(key: "UniqueDeviceID")
             if !hwUdid.isEmpty {
-                debugLog("[LibimobiledeviceGateway] syncFetchUDID: retrieved hardware UDID: \(hwUdid)")
+                logger.debug("[LibimobiledeviceGateway] syncFetchUDID: retrieved hardware UDID: \(hwUdid)")
                 self.cachedUDID = hwUdid
                 return hwUdid
             }
         } catch {
-            debugLog("[LibimobiledeviceGateway] syncFetchUDID: failed to query lockdown: \(error)")
+            logger.debug("[LibimobiledeviceGateway] syncFetchUDID: failed to query lockdown: \(error)")
         }
         if let cached = cachedUDID, !cached.isEmpty {
             return cached
@@ -425,9 +430,9 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
             return try withRSDService(.lockdownd) { stream in
                 try rsdSendPlist(stream, dict: ["Label": "SideStore", "Request": "GetValue", "Key": key])
                 let resp = try rsdRecvPlist(stream)
-                debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) response: \(resp)")
+                logger.debug("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) response: \(resp)")
                 guard let val = resp["Value"] as? String else {
-                    debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) Value missing or invalid: \(resp)")
+                    logger.debug("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) Value missing or invalid: \(resp)")
                     throw LibimobiledeviceGatewayError(.serviceError, reason: "Lockdown value for key '\(key)' is missing or invalid")
                 }
                 return val
@@ -438,7 +443,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
             var valNode: plist_t? = nil
             let err = lockdownd_get_value(client, nil, key, &valNode)
             guard err == LOCKDOWN_E_SUCCESS, let valNode = valNode else {
-                debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) lockdownd_get_value failed with code \(err.rawValue)")
+                logger.debug("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) lockdownd_get_value failed with code \(err.rawValue)")
                 throw LibimobiledeviceGatewayError(.serviceError, reason: "Failed to get lockdown value for key '\(key)': code \(err.rawValue)")
             }
             defer { plist_free(valNode) }
@@ -446,7 +451,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
             var valPtr: UnsafeMutablePointer<CChar>? = nil
             plist_get_string_val(valNode, &valPtr)
             guard let valPtr = valPtr else {
-                debugLog("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) plist string pointer is nil")
+                logger.debug("[LibimobiledeviceGateway] syncGetLockdownValue(\(key)) plist string pointer is nil")
                 throw LibimobiledeviceGatewayError(.serviceError, reason: "Lockdown value for key '\(key)' could not be decoded as string")
             }
             let val = String(cString: valPtr)
@@ -546,14 +551,14 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
     func syncMountPersonalizedDdi(image: Data, trustcache: Data, manifest: Data) throws {
         if pairingFileType == .rppairing {
             try withRSDService(.mobileImageMounter) { stream in
-                debugLog("[LibimobiledeviceGateway] Sending ReceiveBytes for DDI (size: \(image.count))...")
+                logger.debug("[LibimobiledeviceGateway] Sending ReceiveBytes for DDI (size: \(image.count))...")
                 try rsdSendPlist(stream, dict: ["Command": "ReceiveBytes", "ImageSize": image.count, "ImageType": "Personalized"])
                 let resp1 = try rsdRecvPlist(stream)
                 if (resp1["Status"] as? String) != "ReceiveBytesAck" {
                     throw LibimobiledeviceGatewayError(.serviceError, reason: "ReceiveBytes not acknowledged by device: \(resp1)")
                 }
 
-                debugLog("[LibimobiledeviceGateway] Streaming DDI image bytes...")
+                logger.debug("[LibimobiledeviceGateway] Streaming DDI image bytes...")
                 try image.withUnsafeBytes { rawBuf in
                     if let ptr = rawBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) {
                         let err = rppairing_service_stream_send_raw(stream, ptr, image.count)
@@ -568,7 +573,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                     throw LibimobiledeviceGatewayError(.serviceError, reason: "Image upload did not complete: \(resp2)")
                 }
 
-                debugLog("[LibimobiledeviceGateway] Mounting Personalized DDI...")
+                logger.debug("[LibimobiledeviceGateway] Mounting Personalized DDI...")
                 try rsdSendPlist(stream, dict: [
                     "Command": "MountImage",
                     "ImageType": "Personalized",
@@ -579,7 +584,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                 if (resp3["Status"] as? String) != "Complete" {
                     throw LibimobiledeviceGatewayError(.serviceError, reason: "MountImage failed: \(resp3["Error"] ?? "Unknown error")")
                 }
-                debugLog("[LibimobiledeviceGateway] Personalized DDI mounted successfully via RSD!")
+                logger.debug("[LibimobiledeviceGateway] Personalized DDI mounted successfully via RSD!")
             }
             return
         }
@@ -632,13 +637,13 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
     func syncInstallProvisioningProfile(profile: Data) throws {
         if pairingFileType == .rppairing {
             try withRSDService(.misagent) { stream in
-                debugLog("[LibimobiledeviceGateway] Installing provisioning profile via RSD misagent...")
+                logger.debug("[LibimobiledeviceGateway] Installing provisioning profile via RSD misagent...")
                 try rsdSendPlist(stream, dict: ["MessageType": "Install", "Profile": profile])
                 let resp = try rsdRecvPlist(stream)
                 if let status = resp["Status"] as? Int, status != 0 {
                     throw LibimobiledeviceGatewayError(.serviceError, reason: "misagent install failed with status: \(status)")
                 }
-                debugLog("[LibimobiledeviceGateway] Provisioning profile installed successfully via RSD!")
+                logger.debug("[LibimobiledeviceGateway] Provisioning profile installed successfully via RSD!")
             }
             return
         }
@@ -862,14 +867,14 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                 var packetNum: UInt64 = 0
                 let remotePath = "PublicStaging/\(bundleId).ipa"
 
-                debugLog("[LibimobiledeviceGateway] syncsendIpaAfc: Ensuring PublicStaging directory exists...")
+                logger.debug("[LibimobiledeviceGateway] syncsendIpaAfc: Ensuring PublicStaging directory exists...")
                 try rsdAfcMakeDir(stream, path: "PublicStaging", packetNum: &packetNum)
 
-                debugLog("[LibimobiledeviceGateway] syncsendIpaAfc: Opening \(remotePath)...")
+                logger.debug("[LibimobiledeviceGateway] syncsendIpaAfc: Opening \(remotePath)...")
                 let fd = try rsdAfcFileOpen(stream, path: remotePath, mode: 3, packetNum: &packetNum)
                 defer { try? rsdAfcFileClose(stream, fd: fd, packetNum: &packetNum) }
 
-                debugLog("[LibimobiledeviceGateway] syncsendIpaAfc: Staging file opened (fd=\(fd)), uploading \(ipaBytes.count) bytes...")
+                logger.debug("[LibimobiledeviceGateway] syncsendIpaAfc: Staging file opened (fd=\(fd)), uploading \(ipaBytes.count) bytes...")
                 var offset = 0
                 var chunkIdx = 0
                 let totalChunks = (ipaBytes.count + kAfcChunkSize - 1) / kAfcChunkSize
@@ -889,10 +894,10 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                     }
                     offset = end
                     if chunkIdx % 5 == 0 || offset >= ipaBytes.count {
-                        debugLog("[LibimobiledeviceGateway] syncsendIpaAfc: Uploaded chunk \(chunkIdx)/\(totalChunks) (\(offset)/\(ipaBytes.count) bytes)")
+                        logger.debug("[LibimobiledeviceGateway] syncsendIpaAfc: Uploaded chunk \(chunkIdx)/\(totalChunks) (\(offset)/\(ipaBytes.count) bytes)")
                     }
                 }
-                debugLog("[LibimobiledeviceGateway] Successfully uploaded \(ipaBytes.count) bytes to \(remotePath) via RSD AFC!")
+                logger.debug("[LibimobiledeviceGateway] Successfully uploaded \(ipaBytes.count) bytes to \(remotePath) via RSD AFC!")
             }
             return
         }
@@ -934,14 +939,14 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                         "PackageType": "Developer"
                     ]
                 ]
-                debugLog("[LibimobiledeviceGateway] Sending installation_proxy command to install \(remotePath)...")
+                logger.debug("[LibimobiledeviceGateway] Sending installation_proxy command to install \(remotePath)...")
                 try rsdSendPlist(stream, dict: dict)
                 while true {
                     let resp = try rsdRecvPlist(stream)
-                    debugLog("[LibimobiledeviceGateway] installation_proxy response: \(resp)")
+                    logger.debug("[LibimobiledeviceGateway] installation_proxy response: \(resp)")
                     if let status = resp["Status"] as? String {
                         if status == "Complete" {
-                            debugLog("[LibimobiledeviceGateway] installation_proxy completed successfully for \(bundleId)!")
+                            logger.debug("[LibimobiledeviceGateway] installation_proxy completed successfully for \(bundleId)!")
                             return
                         }
                     }
@@ -975,7 +980,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
             try withRSDService(.afc) { stream in
                 var packetNum: UInt64 = 0
 
-                debugLog("[LibimobiledeviceGateway] syncYeetAppDirectory: Ensuring PublicStaging directory exists...")
+                logger.debug("[LibimobiledeviceGateway] syncYeetAppDirectory: Ensuring PublicStaging directory exists...")
                 try rsdAfcMakeDir(stream, path: "PublicStaging", packetNum: &packetNum)
                 try rsdAfcMakeDir(stream, path: remoteBaseDir, packetNum: &packetNum)
                 try rsdAfcMakeDir(stream, path: remoteAppPath, packetNum: &packetNum)
@@ -1022,7 +1027,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                         }
                     }
                 }
-                debugLog("[LibimobiledeviceGateway] Successfully uploaded app bundle to \(remoteAppPath) via RSD AFC!")
+                logger.debug("[LibimobiledeviceGateway] Successfully uploaded app bundle to \(remoteAppPath) via RSD AFC!")
             }
             return
         }
@@ -1077,7 +1082,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                     }
                 }
             }
-            debugLog("[LibimobiledeviceGateway] Successfully uploaded app bundle to \(remoteAppPath) via Lockdown AFC!")
+            logger.debug("[LibimobiledeviceGateway] Successfully uploaded app bundle to \(remoteAppPath) via Lockdown AFC!")
         }
     }
 
@@ -1092,14 +1097,14 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                         "PackageType": "Developer"
                     ]
                 ]
-                debugLog("[LibimobiledeviceGateway] Sending installation_proxy command to install \(remotePath)...")
+                logger.debug("[LibimobiledeviceGateway] Sending installation_proxy command to install \(remotePath)...")
                 try rsdSendPlist(stream, dict: dict)
                 while true {
                     let resp = try rsdRecvPlist(stream)
-                    debugLog("[LibimobiledeviceGateway] installation_proxy response: \(resp)")
+                    logger.debug("[LibimobiledeviceGateway] installation_proxy response: \(resp)")
                     if let status = resp["Status"] as? String {
                         if status == "Complete" {
-                            debugLog("[LibimobiledeviceGateway] installation_proxy completed successfully for \(bundleId)!")
+                            logger.debug("[LibimobiledeviceGateway] installation_proxy completed successfully for \(bundleId)!")
                             return
                         }
                     }
@@ -1161,7 +1166,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
 
     @discardableResult
     private func sendDebugserverCommand(client: debugserver_client_t, name: String, args: [String]) throws -> String? {
-        debugLog("[LibimobiledeviceGateway] sendDebugserverCommand() called, name: \(name), args: \(args)")
+        logger.debug("[LibimobiledeviceGateway] sendDebugserverCommand() called, name: \(name), args: \(args)")
         var command: debugserver_command_t? = nil
         var argPtrs: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
         defer {
@@ -1196,7 +1201,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
     func syncDebugApp(appId: String) throws {
         if pairingFileType == .rppairing {
             try withRSDService(.debugserver) { stream in
-                debugLog("[LibimobiledeviceGateway] RSD debugApp connected to debugserver for \(appId)")
+                logger.debug("[LibimobiledeviceGateway] RSD debugApp connected to debugserver for \(appId)")
             }
             return
         }
@@ -1218,20 +1223,20 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGateway, @u
                 )
             }
             if pid > 0 {
-                debugLog("[LibimobiledeviceGateway] Attaching to PID \(pid) for JIT...")
+                logger.debug("[LibimobiledeviceGateway] Attaching to PID \(pid) for JIT...")
                 let commands = [("vAttach;\(String(format: "%x", pid))", [String]()), ("D", [String]())]
                 for (name, args) in commands {
                     try self.sendDebugserverCommand(client: ds, name: name, args: args)
                 }
             }
-            debugLog("[LibimobiledeviceGateway] debugApp successfully attached and detached for \(appId) (PID: \(pid))")
+            logger.debug("[LibimobiledeviceGateway] debugApp successfully attached and detached for \(appId) (PID: \(pid))")
         }
     }
 
     func syncDebugProcess(pid: UInt32) throws {
         if pairingFileType == .rppairing {
             try withRSDService(.debugserver) { stream in
-                debugLog("[LibimobiledeviceGateway] RSD debugProcess connected to debugserver for PID \(pid)")
+                logger.debug("[LibimobiledeviceGateway] RSD debugProcess connected to debugserver for PID \(pid)")
             }
             return
         }

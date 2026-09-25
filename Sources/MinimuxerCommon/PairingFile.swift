@@ -151,7 +151,7 @@ public enum PairingFileParser {
         guard let rawPlist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
             throw PairingError.invalidPlist("PropertyListSerialization failed")
         }
-        let plist = ConcurrencyUtils.toSendableDictionary(rawPlist)
+        let plist = toSendableDictionary(rawPlist)
         let mode = try validatePairingFile(from: plist, preferred: preferred)
         switch mode {
             case .rppairing:

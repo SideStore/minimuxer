@@ -7,16 +7,19 @@
 //
 
 import Foundation
+import Logging
 
 public enum NetworkUtils {
+    public static let logger = MinimuxerCommonLogging.logger
+
     // Probes whether a TCP port is open on IPv4 or IPv6 with a timeout
     public static func testTCP(ip: String, port: UInt16, timeoutMs: Int = MinimuxerConstants.defaultTCPProbeTimeoutMs) -> Bool {
         guard !ip.isEmpty else {
-            verboseLog("[minimuxer] [net] testTCP empty IP address")
+            logger.trace("[net] testTCP empty IP address")
             return false
         }
         guard !ip.contains("/") else {
-            verboseLog("[minimuxer] [net] testTCP(\(ip):\(port)) invalid IP format (contains subnet/CIDR slash)")
+            logger.trace("[net] testTCP(\(ip):\(port)) invalid IP format (contains subnet/CIDR slash)")
             return false
         }
 
@@ -42,7 +45,7 @@ public enum NetworkUtils {
             }
 
             guard inet_pton(AF_INET6, cleanIp, &addr6.sin6_addr) == 1 else {
-                verboseLog("[minimuxer] [net] testTCP(\(ip):\(port)) invalid IPv6 address")
+                logger.trace("[net] testTCP(\(ip):\(port)) invalid IPv6 address")
                 return false
             }
             #if os(macOS) || os(iOS)
@@ -52,7 +55,7 @@ public enum NetworkUtils {
             addr6.sin6_port = port.bigEndian
         } else {
             guard inet_pton(AF_INET, ip, &addr4.sin_addr) == 1 else {
-                verboseLog("[minimuxer] [net] testTCP(\(ip):\(port)) invalid IPv4 address")
+                logger.trace("[net] testTCP(\(ip):\(port)) invalid IPv4 address")
                 return false
             }
             addr4.sin_family = sa_family_t(AF_INET)
@@ -62,7 +65,7 @@ public enum NetworkUtils {
         let family = isIPv6 ? AF_INET6 : AF_INET
         let fd = socket(family, SOCK_STREAM, 0)
         guard fd >= 0 else {
-            verboseLog("[minimuxer] [net] testTCP(\(ip):\(port)) socket creation failed (errno=\(errno))")
+            logger.trace("[net] testTCP(\(ip):\(port)) socket creation failed (errno=\(errno))")
             return false
         }
         defer { close(fd) }
@@ -97,12 +100,12 @@ public enum NetworkUtils {
             var errorLen = socklen_t(MemoryLayout<Int32>.size)
             getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorLen)
             let isSuccess = socketError == 0
-            verboseLog("[minimuxer] [net] testTCP(\(ip):\(port)) -> \(isSuccess ? "connected" : "socket error \(socketError)") (took \(elapsedMs)ms)")
+            logger.trace("[net] testTCP(\(ip):\(port)) -> \(isSuccess ? "connected" : "socket error \(socketError)") (took \(elapsedMs)ms)")
             return isSuccess
         }
 
         let reason = result == 0 ? "timed out (\(timeoutMs)ms)" : "poll error (result=\(result), revents=0x\(String(pfd.revents, radix: 16)))"
-        verboseLog("[minimuxer] [net] testTCP(\(ip):\(port)) -> failed: \(reason) (took \(elapsedMs)ms)")
+        logger.trace("[net] testTCP(\(ip):\(port)) -> failed: \(reason) (took \(elapsedMs)ms)")
         return false
     }
 }

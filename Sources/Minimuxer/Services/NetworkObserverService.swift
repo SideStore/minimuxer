@@ -8,6 +8,7 @@
 import Network
 import Foundation
 import Combine
+internal import DeviceGateway
 
 final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Sendable {
 
@@ -25,6 +26,7 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "net.monitor")
     private let state = State()
+    let logger = DeviceGatewayLogging.logger
 
     init(
         connectionManager: DeviceConnectionManager,
@@ -49,12 +51,12 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
     func start() async -> Bool {
         let alreadyStarted = await state.with { $0.started }
         guard !alreadyStarted else {
-            verboseLog("[minimuxer] [net] monitor already started")
+            logger.trace("[minimuxer] [net] monitor already started")
             return false
         }
 
         await state.with { $0.started = true }
-        verboseLog("[minimuxer] [net] monitor started")
+        logger.trace("[minimuxer] [net] monitor started")
 
         let paths = AsyncStream<NWPath> { [weak self] continuation in
             guard let self = self else {
@@ -71,7 +73,7 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
 
         let task = Task.detached { [weak self] in
             for await path in paths {
-                verboseLog("[minimuxer] [net] path changed, status: \(path.status)")
+                self?.logger.trace("[minimuxer] [net] path changed, status: \(path.status)")
                 await self?.handleNetworkChange()
             }
         }
@@ -84,13 +86,13 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
         await refreshEndpoint()
         
         // Always re-evaluate and publish network change events as is
-        debugLog("[minimuxer] [net] dispatching status update to subscribers")
+        logger.debug("[minimuxer] [net] dispatching status update to subscribers")
         await onNetworkChanged?()
     }
     
     func refreshEndpoint() async {
         let manager = self.connectionManager
-        verboseLog("[minimuxer] [net] refreshing interfaces list and peers")
+        logger.trace("[minimuxer] [net] refreshing interfaces list and peers")
         let ifacesChanged = await manager.refresh()
         
         guard ifacesChanged else {
@@ -100,13 +102,13 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
         let connectionMode = await manager.getPreferredConnectionMode()
         switch connectionMode {
             case .notConfigured:
-                debugLog("[minimuxer] [net] connection mode not configured. skipping endpoint update...")
+                logger.debug("[minimuxer] [net] connection mode not configured. skipping endpoint update...")
                 return
                 
             case .localVPN:
-                verboseLog("[minimuxer] [net] retrive the first uTun vpn interface info")
+                logger.trace("[minimuxer] [net] retrive the first uTun vpn interface info")
                 if let info = await manager.vpnIface {
-                    verboseLog("""
+                    logger.trace("""
                     [minimuxer] [net] vpn interface detected
                       • name: \(info.name)
                       • addresses: \(info.interfaceAddresses.description)
@@ -126,17 +128,17 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
                     let effectivePeer = isOverridden ? "overridePeer" : "derivedPeerIp"
 
                     if let peer = effectiveIp {
-                        verboseLog("[minimuxer] [net] update device IP with effective tunnel peer: '\(effectivePeer)'")
+                        logger.trace("[minimuxer] [net] update device IP with effective tunnel peer: '\(effectivePeer)'")
                         await self.endpoint.update(peer)
                         self.proxyServer.notifyDeviceAttached(tunnelPeerIp: peer)
                     } else {
-                        verboseLog("[minimuxer] [net] peer not available for \(info.name)")
+                        logger.trace("[minimuxer] [net] peer not available for \(info.name)")
                         await self.endpoint.clear()
                         self.proxyServer.notifyDeviceDetached()
                     }
 
                 } else {
-                    verboseLog("[minimuxer] [net] no local VPN interface detected")
+                    logger.trace("[minimuxer] [net] no local VPN interface detected")
                     await self.endpoint.clear()
                     self.proxyServer.notifyDeviceDetached()
                 }
@@ -144,7 +146,7 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
             case .remoteServer:
                 let isReachable = await manager.isRemoteServerIpReachable
                 if let remoteIp = await manager.remoteServerIp {
-                    verboseLog("""
+                    logger.trace("""
                     [minimuxer] [net] remote server endpoint detected \(isReachable ? "and reachable" : "but unreachable")
                       • remoteServerIp: \(remoteIp)
                     
@@ -157,7 +159,7 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
                         self.proxyServer.notifyDeviceDetached()
                     }
                 } else {
-                    verboseLog("[minimuxer] [net] remote server endpoint unreachable")
+                    logger.trace("[minimuxer] [net] remote server endpoint unreachable")
                     await self.endpoint.clear()
                     self.proxyServer.notifyDeviceDetached()
                 }
@@ -168,7 +170,7 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
     func stop() async -> Bool {
         let isStarted = await state.with { $0.started }
         guard isStarted else {
-            verboseLog("[minimuxer] [net] monitor already stopped")
+            logger.trace("[minimuxer] [net] monitor already stopped")
             return false
         }
 
@@ -179,7 +181,7 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
             $0.started = false
         }
         
-        verboseLog("[minimuxer] [net] monitor stopped")
+        logger.trace("[minimuxer] [net] monitor stopped")
         return true
     }
     

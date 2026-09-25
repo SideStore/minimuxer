@@ -10,6 +10,7 @@ import Foundation
 import EMProxy
 import Network
 internal import MinimuxerCommon
+import Logging
 
 
 public enum EMProxyError: Error, LocalizedError, CustomStringConvertible, Equatable, Sendable {
@@ -74,9 +75,9 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
             guard let msgPtr = msgPtr else { return false }
             let msg = "[EMProxy] \(String(cString: msgPtr))"
             if level <= 1 {
-                verboseLog(msg)
+                MinimuxerCommonLogging.logger.trace(Logger.Message(stringLiteral: msg))
             } else {
-                debugLog(msg)
+                MinimuxerCommonLogging.logger.debug(Logger.Message(stringLiteral: msg))
             }
             return true
         }
@@ -140,7 +141,7 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
 
     private func triggerVPNHandshake(host: String, port: UInt16) async {
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            debugLog("[EMProxy] triggerVPNHandshake skipped: host is empty")
+            MinimuxerCommonLogging.logger.debug("[EMProxy] triggerVPNHandshake skipped: host is empty")
             return
         }
         let timeout = Double(MinimuxerConstants.vpnHandshakeTimeoutNs) / 1_000_000_000.0
@@ -158,11 +159,11 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
     private func probeVPNHandshake(port: UInt16) async {
         let candidates = discoverUtunCandidateDestinations()
         guard !candidates.isEmpty else {
-            debugLog("[EMProxy] probeVPNHandshake skipped: no utun interface candidates found")
+            MinimuxerCommonLogging.logger.debug("[EMProxy] probeVPNHandshake skipped: no utun interface candidates found")
             return
         }
 
-        debugLog("[EMProxy] probeVPNHandshake starting for candidates: \(candidates), port: \(port)")
+        MinimuxerCommonLogging.logger.debug("[EMProxy] probeVPNHandshake starting for candidates: \(candidates), port: \(port)")
         let timeout = Double(MinimuxerConstants.vpnHandshakeTimeoutNs) / 1_000_000_000.0
         let startTime = Date()
 
@@ -184,13 +185,13 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
             }
 
             if success {
-                debugLog("[EMProxy] probeVPNHandshake succeeded!")
+                MinimuxerCommonLogging.logger.debug("[EMProxy] probeVPNHandshake succeeded!")
                 return
             }
 
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
-        debugLog("[EMProxy] probeVPNHandshake timed out after \(timeout)s")
+        MinimuxerCommonLogging.logger.debug("[EMProxy] probeVPNHandshake timed out after \(timeout)s")
     }
 
     private func probeHost(_ host: String, port: UInt16) async -> Bool {
@@ -210,7 +211,7 @@ public final class EMProxyImpl: @unchecked Sendable, EMProxyAPI {
         return await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 for await state in states {
-                    debugLog("[EMProxy] probeHost(\(host):\(port)) state: \(state)")
+                    MinimuxerCommonLogging.logger.debug("[EMProxy] probeHost(\(host):\(port)) state: \(state)")
                     if let result = self.isProbeSuccessful(for: state) {
                         connection.cancel()
                         return result
