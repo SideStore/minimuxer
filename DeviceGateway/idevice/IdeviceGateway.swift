@@ -167,13 +167,13 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     private func closePersistentHeartbeatLocked() {
         if let client = self.persistentHeartbeatClient {
             verboseLog("[IdeviceGateway] closePersistentHeartbeat() freeing client")
-            heartbeat_client_free(client)
             self.persistentHeartbeatClient = nil
+            heartbeat_client_free(client)
         }
         if let provider = self.persistentHeartbeatProvider {
             verboseLog("[IdeviceGateway] closePersistentHeartbeat() freeing provider")
-            idevice_provider_free(provider)
             self.persistentHeartbeatProvider = nil
+            idevice_provider_free(provider)
         }
     }
 
@@ -1668,9 +1668,6 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             }
             guard let tempPairingFile = tempPairingFile else {
                 throw IdeviceGatewayError(.connectionFailed, reason: "Temporary pairing file was nil")
-            }
-            defer {
-                idevice_pairing_file_free(tempPairingFile)
             }
 
             var provider: OpaquePointer? = nil
