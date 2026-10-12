@@ -28,6 +28,7 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
     var pairingFileType: PairingProtocol { get }
     var pairingFileData: Data? { get }
     var pairingDataDict: [String: any Sendable]? { get }
+    var isBusy: Bool { get }
 
     func getPort(for protocolType: PairingProtocol) -> UInt16
     func setPort(_ port: UInt16, for protocolType: PairingProtocol)
@@ -91,5 +92,9 @@ public extension DeviceGatewayAPI {
     // Active service port for the currently loaded pairing file mode
     var servicePort: UInt16 {
         getPort(for: pairingFileType)
+    }
+
+    var isBusy: Bool {
+        false
     }
 }

@@ -35,11 +35,11 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
         self.endpoint = endpoint
         self.proxyServer = proxyServer
     }
-    
+
     private actor State {
         var started = false
         var observationTask: Task<Void, Never>? = nil
-        
+
         func with<T>(_ body: (isolated State) throws -> T) rethrows -> T {
             try body(self)
         }
@@ -79,91 +79,107 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
 
         return true
     }
-    
+
     private func handleNetworkChange() async {
         await refreshEndpoint()
-        
+
         // Always re-evaluate and publish network change events as is
         debugLog("[minimuxer] [net] dispatching status update to subscribers")
         await onNetworkChanged?()
     }
-    
+
     func refreshEndpoint() async {
+        await refreshEndpoint(force: false)
+    }
+
+    func refreshEndpoint(force: Bool) async {
         let manager = self.connectionManager
-        verboseLog("[minimuxer] [net] refreshing interfaces list and peers")
-        let ifacesChanged = await manager.refresh()
-        
-        guard ifacesChanged else {
+        verboseLog("[minimuxer] [net] refreshing interfaces list and peers (force: \(force))")
+        let ifacesChanged = await manager.refresh(force: force)
+
+        guard ifacesChanged || force else {
             return
         }
-        
+
         let connectionMode = await manager.getPreferredConnectionMode()
         switch connectionMode {
             case .notConfigured:
                 debugLog("[minimuxer] [net] connection mode not configured. skipping endpoint update...")
                 return
-                
+
             case .localVPN:
                 verboseLog("[minimuxer] [net] retrive the first uTun vpn interface info")
                 if let info = await manager.vpnIface {
                     verboseLog("""
                     [minimuxer] [net] vpn interface detected
-                      • name: \(info.name)
-                      • addresses: \(info.interfaceAddresses.description)
-                      • linkType: \(info.linkType)
-                      • linkLayerDestinationIP: \(info.linkLayerDestinationIP?.description ?? "nil")
-                      • destinationIPs: [\(info.destinationIPs.map { $0.description }.joined(separator: ", "))]
-                      • destinationGatewayIPs: [\(info.destinationGatewayIPs.map { $0.description }.joined(separator: ", "))]
-                    
+                       name: \(info.name)
+                       addresses: \(info.interfaceAddresses.description)
+                       linkType: \(info.linkType)
+                       linkLayerDestinationIP: \(info.linkLayerDestinationIP?.description ?? "nil")
+                       destinationIPs: [\(info.destinationIPs.map { $0.description }.joined(separator: ", "))]
+                       destinationGatewayIPs: [\(info.destinationGatewayIPs.map { $0.description }.joined(separator: ", "))]
+
                     """)
 
                     let overrideIp = await manager.overridePeerIp
                     let isOverridden = !(overrideIp ?? "").isEmpty
 
                     let effectiveIp = await isOverridden
-                            ? (manager.isOverridePeerIpReachable ? overrideIp : nil)            // when override active, we don't question user intent
-                            : (manager.isDerivedPeerIpReachable ? manager.derivedPeerIp : nil)  // only if not overriden, we try to use auto discovered
+                            ? (manager.isOverridePeerIpReachable ? overrideIp : nil)
+                            : (manager.isDerivedPeerIpReachable ? manager.derivedPeerIp : nil)
                     let effectivePeer = isOverridden ? "overridePeer" : "derivedPeerIp"
 
                     if let peer = effectiveIp {
                         verboseLog("[minimuxer] [net] update device IP with effective tunnel peer: '\(effectivePeer)'")
-                        await self.endpoint.update(peer)
-                        self.proxyServer.notifyDeviceAttached(tunnelPeerIp: peer)
+                        let changed = await self.endpoint.update(peer)
+                        if changed {
+                            self.proxyServer.notifyDeviceAttached(tunnelPeerIp: peer)
+                        }
                     } else {
                         verboseLog("[minimuxer] [net] peer not available for \(info.name)")
-                        await self.endpoint.clear()
-                        self.proxyServer.notifyDeviceDetached()
+                        let wasSet = await self.endpoint.clear()
+                        if wasSet {
+                            self.proxyServer.notifyDeviceDetached()
+                        }
                     }
 
                 } else {
                     verboseLog("[minimuxer] [net] no local VPN interface detected")
-                    await self.endpoint.clear()
-                    self.proxyServer.notifyDeviceDetached()
+                    let wasSet = await self.endpoint.clear()
+                    if wasSet {
+                        self.proxyServer.notifyDeviceDetached()
+                    }
                 }
-            
+
             case .remoteServer:
                 let isReachable = await manager.isRemoteServerIpReachable
                 if let remoteIp = await manager.remoteServerIp {
                     verboseLog("""
                     [minimuxer] [net] remote server endpoint detected \(isReachable ? "and reachable" : "but unreachable")
-                      • remoteServerIp: \(remoteIp)
-                    
+                       remoteServerIp: \(remoteIp)
+
                     """)
                     if isReachable {
-                        await self.endpoint.update(remoteIp)
-                        self.proxyServer.notifyDeviceAttached(tunnelPeerIp: remoteIp)
+                        let changed = await self.endpoint.update(remoteIp)
+                        if changed {
+                            self.proxyServer.notifyDeviceAttached(tunnelPeerIp: remoteIp)
+                        }
                     } else {
-                        await self.endpoint.clear()
-                        self.proxyServer.notifyDeviceDetached()
+                        let wasSet = await self.endpoint.clear()
+                        if wasSet {
+                            self.proxyServer.notifyDeviceDetached()
+                        }
                     }
                 } else {
                     verboseLog("[minimuxer] [net] remote server endpoint unreachable")
-                    await self.endpoint.clear()
-                    self.proxyServer.notifyDeviceDetached()
+                    let wasSet = await self.endpoint.clear()
+                    if wasSet {
+                        self.proxyServer.notifyDeviceDetached()
+                    }
                 }
-            }
+        }
     }
-    
+
     @discardableResult
     func stop() async -> Bool {
         let isStarted = await state.with { $0.started }
@@ -178,41 +194,41 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
             $0.observationTask = nil
             $0.started = false
         }
-        
+
         verboseLog("[minimuxer] [net] monitor stopped")
         return true
     }
-    
+
     var isWifiSatisfied: Bool {
         let path = monitor.currentPath
         return path.status == .satisfied && path.usesInterfaceType(.wifi)
     }
-    
+
     var isWiredSatisfied: Bool {
         let path = monitor.currentPath
         return path.status == .satisfied && path.usesInterfaceType(.wiredEthernet)
     }
-    
+
     var isUsbSatisfied: Bool {
         return NetworkIfaceScanner.scan(quiet: true).contains { info in
             let name = info.name.lowercased()
             return name.hasPrefix("en") && name != "en0" && (info.interfaceAddresses.v4.first?.host.hasPrefix("169.254.") == true)
         }
     }
-    
+
     var isBridgeSatisfied: Bool {
         let path = monitor.currentPath
         if path.status == .satisfied && path.usesInterfaceType(.other) {
             return true
         }
-        
+
         return NetworkIfaceScanner.scan(quiet: true).contains { info in
             info.name.lowercased().contains("bridge") ||
             info.name.lowercased().contains("ap")
         }
     }
 
-    // True when at least one `utun*` interface is active (userspace VPN — ex: wireguard).
+    // True when at least one `utun*` interface is active (userspace VPN  ex: wireguard).
     var isUTunAvailable: Bool {
         return NetworkIfaceScanner.scan(quiet: true).contains { $0.name.lowercased().hasPrefix("utun") }
     }
@@ -228,7 +244,7 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
             let type = LocalInterfaceType(name: info.name, isLinkLocal: isLinkLocal)
             let v4 = info.interfaceAddresses.v4.first
             let v6 = info.interfaceAddresses.v6.first
-            
+
             return LocalInterfaceInfo(
                 name: info.name,
                 ip: v4?.host ?? (v6 ?? ""),

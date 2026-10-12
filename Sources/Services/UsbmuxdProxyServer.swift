@@ -178,11 +178,19 @@ final internal class UsbmuxdProxyServer {
     }
 
     private func processPacketData(_ data: Data, on connection: NWConnection) {
+        guard let packet = RawPacket(data: data) else { return }
+
+        // Intercept Connect BEFORE normal packet handling.
+        // After replying {"Number": 0} we stop the packet loop and
+        // switch to a raw byte bridge between the client and the device TCP port.
+        if let msgType = packet.plist["MessageType"] as? String, msgType == "Connect" {
+            handleConnect(packet, on: connection)
+            return
+        }
+
         defer {
             readNextPacket(on: connection)
         }
-
-        guard let packet = RawPacket(data: data) else { return }
 
         do {
             let response = try handlePacket(packet)
@@ -195,6 +203,98 @@ final internal class UsbmuxdProxyServer {
                 }
             }))
         } catch {}
+    }
+
+    private func handleConnect(_ packet: RawPacket, on client: NWConnection) {
+        debugLog("[minimuxer] UsbmuxdProxyServer Connect request: \(packet.plist)")
+
+        guard let portNum = packet.plist["PortNumber"] as? NSNumber else {
+            debugLog("[minimuxer] Connect: missing/invalid PortNumber")
+            sendConnectResult(client, code: 1, tag: packet.tag)
+            return
+        }
+        let port = UInt16(bigEndian: portNum.uint16Value)
+
+        guard let deviceIp = currentDeviceIp else {
+            debugLog("[minimuxer] Connect: no device attached")
+            sendConnectResult(client, code: 2, tag: packet.tag)
+            return
+        }
+
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            debugLog("[minimuxer] Connect: invalid port \(port)")
+            sendConnectResult(client, code: 1, tag: packet.tag)
+            return
+        }
+
+        debugLog("[minimuxer] Connect: bridging client -> \(deviceIp):\(port)")
+
+        let deviceParams = NWParameters.tcp
+        let deviceConn = NWConnection(
+            host: NWEndpoint.Host(deviceIp),
+            port: nwPort,
+            using: deviceParams
+        )
+
+        deviceConn.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            switch state {
+                case .ready:
+                    debugLog("[minimuxer] Connect: device TCP ready")
+                    self.sendConnectResult(client, code: 0, tag: packet.tag)
+                    self.bridge(client: client, device: deviceConn)
+                case .failed(let error):
+                    debugLog("[minimuxer] Connect: device TCP failed: \(error)")
+                    self.sendConnectResult(client, code: 3, tag: packet.tag)
+                    deviceConn.cancel()
+                case .cancelled:
+                    break
+                default:
+                    break
+            }
+        }
+        deviceConn.start(queue: queue)
+    }
+
+    private func sendConnectResult(_ client: NWConnection, code: UInt, tag: UInt32) {
+        let resp = RawPacket(plist: ["Number": code], version: 1, message: 8, tag: tag)
+        client.send(content: resp.data, completion: .contentProcessed({ _ in }))
+    }
+
+    private func bridge(client: NWConnection, device: NWConnection) {
+        pump(from: client, to: device)
+        pump(from: device, to: client)
+    }
+
+    private func pump(from source: NWConnection, to dest: NWConnection) {
+        source.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            if let error = error {
+                debugLog("[minimuxer] bridge recv error: \(error)")
+                source.cancel()
+                dest.cancel()
+                return
+            }
+            if let data = data, !data.isEmpty {
+                dest.send(content: data, completion: .contentProcessed({ err in
+                    if let err = err {
+                        debugLog("[minimuxer] bridge send error: \(err)")
+                        source.cancel()
+                        dest.cancel()
+                        return
+                    }
+                    if !isComplete {
+                        self.pump(from: source, to: dest)
+                    }
+                }))
+            } else if isComplete {
+                debugLog("[minimuxer] bridge closed by peer")
+                source.cancel()
+                dest.cancel()
+            } else {
+                self.pump(from: source, to: dest)
+            }
+        }
     }
 
     // Packet Handling

@@ -24,6 +24,31 @@ internal final class IdeviceGatewayError: DeviceGatewayError, @unchecked Sendabl
 
 
 
+/// True when the message/error describes a dropped or reset device connection
+/// (stale TLS session, broken pipe, ...). Such failures are transient and must
+/// NOT be interpreted as a real answer from the device (e.g. "DDI not mounted").
+internal func isTransportErrorText(_ text: String) -> Bool {
+    let t = text.lowercased()
+    return t.contains("unexpectedeof")
+        || t.contains("close_notify")
+        || t.contains("early eof")
+        || t.contains("brokenpipe")
+        || t.contains("broken pipe")
+        || t.contains("connectionreset")
+        || t.contains("connection reset")
+        || t.contains("connectionaborted")
+        || t.contains("notconnected")
+}
+
+internal func isTransportError(_ error: Error) -> Bool {
+    if let e = error as? DeviceGatewayError {
+        if isTransportErrorText(e.reason) {
+            return true
+        }
+    }
+    return isTransportErrorText("\(error)") || isTransportErrorText(error.localizedDescription)
+}
+
 extension String {
     // Un-escapes literal "\\n" and "\\\"" escape sequences into real line breaks and quotes.
     var cleanedErrorFormatting: String {
@@ -35,6 +60,7 @@ extension String {
 
 public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @unchecked Sendable {
     public static let shared = IdeviceGateway()
+    private static let detachAfterLaunch: Bool = true
     public let requiresUsbmuxd: Bool = false
     var lastError: Error? = nil
 
@@ -73,8 +99,32 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     }
 
     private var pairingFile: OpaquePointer? = nil
+    private var lastDebugserverNeedsSSL: Bool = false
+    private var isDebugActive: Bool = false
+    private var isTransferActive: Bool = false
+    // PATCH: hold reference to debug_proxy client so it survives debugApp() return
+    private var activeDebugClient: OpaquePointer?
     private var adapter: OpaquePointer? = nil
     private var handshake: OpaquePointer? = nil
+
+    private var persistentHeartbeatClient: OpaquePointer? = nil
+    private var persistentHeartbeatProvider: OpaquePointer? = nil
+    private let heartbeatLock = NSLock()
+
+    // Serializes TCP lockdown service sessions to prevent concurrent connection
+    // thrashing and TLS session drops on iOS lockdown services (port 62078).
+    private let lockdownLock = NSRecursiveLock()
+
+    public var isBusy: Bool {
+        if self.isDebugActive || self.isTransferActive {
+            return true
+        }
+        if !lockdownLock.try() {
+            return true
+        }
+        lockdownLock.unlock()
+        return false
+    }
 
     public override init() {
         try! super.init()
@@ -86,6 +136,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
 
     public override func cleanup() {
         debugLog("[IdeviceGateway] cleanup() called")
+        closePersistentHeartbeat()
         if let pairingFile = self.pairingFile {
             verboseLog("[IdeviceGateway] cleanup() freeing pairingFile")
             if pairingFileType == .rppairing {
@@ -107,8 +158,28 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         }
     }
 
+    private func closePersistentHeartbeat() {
+        heartbeatLock.lock()
+        defer { heartbeatLock.unlock() }
+        closePersistentHeartbeatLocked()
+    }
+
+    private func closePersistentHeartbeatLocked() {
+        if let client = self.persistentHeartbeatClient {
+            verboseLog("[IdeviceGateway] closePersistentHeartbeat() freeing client")
+            self.persistentHeartbeatClient = nil
+            heartbeat_client_free(client)
+        }
+        if let provider = self.persistentHeartbeatProvider {
+            verboseLog("[IdeviceGateway] closePersistentHeartbeat() freeing provider")
+            self.persistentHeartbeatProvider = nil
+            idevice_provider_free(provider)
+        }
+    }
+
     public override func invalidateConnection() {
-        debugLog("[IdeviceGateway] invalidateConnection() called - clearing stale adapter and handshake")
+        debugLog("[IdeviceGateway] invalidateConnection() called - clearing stale adapter, handshake and heartbeat")
+        closePersistentHeartbeat()
         if let handshake = handshake {
             rsd_handshake_free(handshake)
             self.handshake = nil
@@ -547,7 +618,33 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         return try action(client)
     }
 
+    /// Retries the whole connect+action on transient transport errors
+    /// (UnexpectedEof / BrokenPipe / ConnectionReset). Every fresh attempt builds a new
+    /// provider and a new TLS session, so a stale connection cannot poison the retry.
     private func performWithTcpService<T>(
+        connect: @escaping (OpaquePointer?, UnsafeMutablePointer<OpaquePointer?>?) -> UnsafeMutablePointer<IdeviceFfiError>?,
+        cleanup: @escaping (OpaquePointer?) -> Void,
+        serviceName: String,
+        action: (OpaquePointer) throws -> T
+    ) throws -> T {
+        lockdownLock.lock()
+        defer { lockdownLock.unlock() }
+
+        let maxAttempts = 3
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                return try performWithTcpServiceOnce(connect: connect, cleanup: cleanup, serviceName: serviceName, action: action)
+            } catch {
+                guard attempt < maxAttempts, isTransportError(error) else { throw error }
+                debugLog("[IdeviceGateway] performWithTcpService(\(serviceName)) transport error on attempt \(attempt)/\(maxAttempts): \(error). Retrying with a fresh session...")
+                Thread.sleep(forTimeInterval: 1.0 * Double(attempt))
+            }
+        }
+    }
+
+    private func performWithTcpServiceOnce<T>(
         connect: @escaping (OpaquePointer?, UnsafeMutablePointer<OpaquePointer?>?) -> UnsafeMutablePointer<IdeviceFfiError>?,
         cleanup: @escaping (OpaquePointer?) -> Void,
         serviceName: String,
@@ -581,6 +678,15 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             throw IdeviceGatewayError(.connectionFailed, reason: "Temporary pairing file was nil")
         }
 
+        var providerToFree: OpaquePointer? = nil
+        defer {
+            if let ptr = providerToFree {
+                idevice_provider_free(ptr)
+            }
+        }
+
+        var client: OpaquePointer? = nil
+
         var provider: OpaquePointer? = nil
         let provErr = try withSockaddr(ip: deviceEndpointIp, port: MinimuxerConstants.lockdowndPort) { sockaddrPtr, _ in
             sockaddrPtr.withMemoryRebound(to: idevice_sockaddr.self, capacity: 1) { reboundPtr in
@@ -597,15 +703,10 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             debugLog("[IdeviceGateway] error: TCP Provider was nil")
             throw IdeviceGatewayError(.connectionFailed, reason: "TCP Provider was nil")
         }
-        var providerToFree: OpaquePointer? = provider
-        defer {
-            if let ptr = providerToFree {
-                idevice_provider_free(ptr)
-            }
-        }
+        providerToFree = provider
 
-        var client: OpaquePointer? = nil
         let connectErr = connect(provider, &client)
+
         if let connectErr = connectErr {
             providerToFree = nil
             let msg = self.getErrorMessage(from: connectErr)
@@ -787,6 +888,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     }
 
     private func syncsendIpaAfc(bundleId: String, ipaBytes: Data) throws {
+        self.isTransferActive = true
+        defer { self.isTransferActive = false }
         debugLog("[IdeviceGateway] sendIpaAfc() called, bundleId: \(bundleId), ipaBytes size: \(ipaBytes.count)")
         try verifyInitialized()
         try performWithEitherService(
@@ -824,23 +927,39 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
                 afc_file_close(fileHandle)
             }
  
+            let chunkSize = 64 * 1024 // 64 KB (AFC MAXIMUM_PACKET_SIZE)
+            let totalBytes = ipaBytes.count
+            var offset = 0
+            var lastLoggedOffset = 0
+            verboseLog("[IdeviceGateway] sendIpaAfc() writing \(totalBytes) bytes to AFC file in \(chunkSize) byte chunks")
             try ipaBytes.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
-                if let baseAddress = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) {
-                    verboseLog("[IdeviceGateway] sendIpaAfc() writing data to AFC file")
-                    let writeErr = afc_file_write(fileHandle, baseAddress, ipaBytes.count)
+                guard let baseAddress = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    throw IdeviceGatewayError(.serviceError, reason: "Invalid IPA buffer")
+                }
+                while offset < totalBytes {
+                    let bytesToWrite = min(chunkSize, totalBytes - offset)
+                    let chunkPtr = baseAddress.advanced(by: offset)
+                    let writeErr = afc_file_write(fileHandle, chunkPtr, bytesToWrite)
                     if let writeErr = writeErr {
                         let msg = self.getErrorMessage(from: writeErr)
-                        debugLog("[IdeviceGateway] sendIpaAfc() afc_file_write failed: \(msg)")
+                        debugLog("[IdeviceGateway] sendIpaAfc() afc_file_write failed at \(offset)/\(totalBytes): \(msg)")
                         defer { idevice_error_free(writeErr) }
-                        throw IdeviceGatewayError(.serviceError, reason: "Failed to write to AFC file, error: (\(msg))")
+                        throw IdeviceGatewayError(.serviceError, reason: "Failed to write to AFC file at \(offset)/\(totalBytes), error: (\(msg))")
                     }
-                    debugLog("[IdeviceGateway] sendIpaAfc() afc_file_write succeeded")
+                    offset += bytesToWrite
+                    if offset - lastLoggedOffset >= 10 * 1024 * 1024 || offset == totalBytes {
+                        debugLog("[IdeviceGateway] sendIpaAfc() progress: \(offset)/\(totalBytes) bytes (\(Int(Double(offset) / Double(totalBytes) * 100))%)")
+                        lastLoggedOffset = offset
+                    }
                 }
+                debugLog("[IdeviceGateway] sendIpaAfc() afc_file_write completed successfully for all \(totalBytes) bytes")
             }
         }
     }
 
     private func syncInstallIpa(bundleId: String) throws {
+        self.isTransferActive = true
+        defer { self.isTransferActive = false }
         debugLog("[IdeviceGateway] installIpa() called, bundleId: \(bundleId)")
         try verifyInitialized()
         try performWithEitherService(
@@ -865,6 +984,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     }
 
     private func syncsendAppBundleAfc(bundleId: String, appURL: URL) throws {
+        self.isTransferActive = true
+        defer { self.isTransferActive = false }
         debugLog("[IdeviceGateway] sendAppBundleAfc() called, bundleId: \(bundleId), appURL: \(appURL.path)")
         try verifyInitialized()
         try performWithEitherService(
@@ -927,14 +1048,21 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
 
                     let fileData = try Data(contentsOf: fileURL, options: .alwaysMapped)
                     if !fileData.isEmpty {
+                        let chunkSize = 64 * 1024
+                        let totalBytes = fileData.count
+                        var offset = 0
                         try fileData.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
-                            if let baseAddress = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) {
-                                let writeErr = afc_file_write(fileHandle, baseAddress, fileData.count)
+                            guard let baseAddress = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                            while offset < totalBytes {
+                                let bytesToWrite = min(chunkSize, totalBytes - offset)
+                                let chunkPtr = baseAddress.advanced(by: offset)
+                                let writeErr = afc_file_write(fileHandle, chunkPtr, bytesToWrite)
                                 if let writeErr = writeErr {
                                     let msg = self.getErrorMessage(from: writeErr)
                                     defer { idevice_error_free(writeErr) }
                                     throw IdeviceGatewayError(.serviceError, reason: "Failed to write to AFC file \(remoteItemPath): \(msg)")
                                 }
+                                offset += bytesToWrite
                             }
                         }
                     }
@@ -945,6 +1073,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     }
 
     private func syncInstallAppBundle(bundleId: String, appName: String) throws {
+        self.isTransferActive = true
+        defer { self.isTransferActive = false }
         debugLog("[IdeviceGateway] installAppBundle() called, bundleId: \(bundleId), appName: \(appName)")
         try verifyInitialized()
         try performWithEitherService(
@@ -1095,136 +1225,286 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             cleanup: lockdownd_client_free,
             serviceName: "lockdownd"
         ) { lockdownClient in
-            verboseLog("[IdeviceGateway] starting debugserver service")
-            let err = "com.apple.debugserver".withCString { serviceNamePtr in
-                return lockdownd_start_service(lockdownClient, serviceNamePtr, &port, &ssl)
+            // FIX: iOS 16 requires an explicit lockdownd_start_session before
+            // calling lockdownd_start_service for privileged services.
+            // Without this, lockdownd returns SessionInactive.
+            if self.pairingFileType == .lockdown, let pairingFileData = self.pairingFileData {
+                var pf: OpaquePointer? = nil
+                let parseErr = pairingFileData.withUnsafeBytes { buf in
+                    idevice_pairing_file_from_bytes(buf.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt(pairingFileData.count), &pf)
+                }
+                if let parseErr = parseErr {
+                    defer { safeFreeError(parseErr) }
+                    let msg = self.getErrorMessage(from: parseErr)
+                    throw IdeviceGatewayError(.invalidPairingFile, reason: "Failed to parse pairing file for debugserver: \(msg)")
+                }
+                if let pf = pf {
+                    defer { idevice_pairing_file_free(pf) }
+                    verboseLog("[IdeviceGateway] startDebugserverService starting lockdownd session")
+                    let sessionErr = lockdownd_start_session(lockdownClient, pf)
+                    if let sessionErr = sessionErr {
+                        defer { safeFreeError(sessionErr) }
+                        let msg = self.getErrorMessage(from: sessionErr)
+                        debugLog("[IdeviceGateway] startDebugserverService lockdownd_start_session failed: \(msg)")
+                        if self.isPairingError(sessionErr) {
+                            throw IdeviceGatewayError(.invalidPairingFile, reason: "Lockdown session failed (pairing invalid): \(msg)")
+                        } else {
+                            throw IdeviceGatewayError(.connectionFailed, reason: "Lockdown session failed for debugserver: \(msg)")
+                        }
+                    }
+                }
             }
-            if let err = err {
-                let msg = self.getErrorMessage(from: err)
-                debugLog("[IdeviceGateway] failed to start debugserver: \(msg)")
-                defer { idevice_error_free(err) }
-                throw IdeviceGatewayError(.serviceError, reason: "Failed to start debugserver service, error: (\(msg))")
+
+            // FIX: try DVTSecureSocketProxy first (iOS 13.6+), fallback to legacy.
+            // Based on libimobiledevice commit 98056a8.
+            // Try legacy first (no SSL) for TCP direct compatibility.
+            // DVTSecureSocketProxy requires TLS handshake, which plain TCP cannot do.
+            let serviceNames = [
+                "com.apple.debugserver",
+                "com.apple.debugserver.DVTSecureSocketProxy"
+            ]
+            var lastStartError: IdeviceGatewayError? = nil
+            var started = false
+            for (idx, serviceName) in serviceNames.enumerated() {
+                verboseLog("[IdeviceGateway] attempting to start service: \(serviceName) (\(idx + 1)/\(serviceNames.count))")
+                let err = serviceName.withCString { serviceNamePtr in
+                    return lockdownd_start_service(lockdownClient, serviceNamePtr, &port, &ssl)
+                }
+                if let err = err {
+                    let msg = self.getErrorMessage(from: err)
+                    debugLog("[IdeviceGateway] failed to start \(serviceName): \(msg)")
+                    defer { idevice_error_free(err) }
+                    lastStartError = IdeviceGatewayError(.serviceError, reason: "Failed to start \(serviceName): (\(msg))")
+                    continue
+                }
+                debugLog("[IdeviceGateway] debugserver started using: \(serviceName), port: \(port), ssl: \(ssl)")
+                started = true
+                break
+            }
+            if !started {
+                throw lastStartError ?? IdeviceGatewayError(.serviceError, reason: "Failed to start debugserver with all service names")
             }
         }
 
         debugLog("[IdeviceGateway] debugserver started on port: \(port), ssl: \(ssl)")
+        self.lastDebugserverNeedsSSL = ssl
         return port
     }
 
     private func connectDebugProxy(port: UInt16) throws -> OpaquePointer {
-        var addr: OpaquePointer? = nil
-        let addrErr = idevice_usbmuxd_default_addr_new(&addr)
-        if let addrErr = addrErr {
-            debugLog("[IdeviceGateway] connectDebugProxy default_addr_new failed")
-            defer { idevice_error_free(addrErr) }
-            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to get usbmuxd default addr")
-        }
-        guard let addr = addr else {
-            throw IdeviceGatewayError(.connectionFailed, reason: "Usbmuxd default addr was nil")
-        }
-        defer { idevice_usbmuxd_addr_free(addr) }
+        debugLog("[IdeviceGateway] connectDebugProxy(port: \(port)) - TCP direct path")
 
-        var conn: OpaquePointer? = nil
-        let connErr = idevice_usbmuxd_new_default_connection(0, &conn)
+        guard let deviceIp = deviceEndpointIp else {
+            throw IdeviceGatewayError(.deviceEndpointIpNotAvailable)
+        }
+
+        // STEP 1: TCP connect via idevice_new_tcp_socket (plain TCP, no TLS)
+        var ideviceHandle: OpaquePointer? = nil
+        let connErr = try withSockaddr(ip: deviceIp, port: port) { sockaddrPtr, sockaddrLen in
+            sockaddrPtr.withMemoryRebound(to: idevice_sockaddr.self, capacity: 1) { reboundPtr in
+                idevice_new_tcp_socket(
+                    reboundPtr,
+                    sockaddrLen,
+                    MinimuxerConstants.appName,
+                    &ideviceHandle
+                )
+            }
+        }
         if let connErr = connErr {
-            debugLog("[IdeviceGateway] connectDebugProxy new_default_connection failed")
-            defer { idevice_error_free(connErr) }
-            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to create usbmuxd connection")
+            let msg = self.getErrorMessage(from: connErr)
+            debugLog("[IdeviceGateway] idevice_new_tcp_socket failed: \(msg)")
+            defer { safeFreeError(connErr) }
+            throw IdeviceGatewayError(.connectionFailed, reason: "TCP connect to \(deviceIp):\(port) failed: \(msg)")
         }
-        guard let conn = conn else {
-            throw IdeviceGatewayError(.connectionFailed, reason: "Usbmuxd connection was nil")
+        guard let ideviceHandle = ideviceHandle else {
+            throw IdeviceGatewayError(.connectionFailed, reason: "ideviceHandle was nil")
         }
-        defer { idevice_usbmuxd_connection_free(conn) }
+        debugLog("[IdeviceGateway] TCP connected to \(deviceIp):\(port)")
 
-        var devices: UnsafeMutablePointer<OpaquePointer?>? = nil
-        var count: Int32 = 0
-        let devErr = idevice_usbmuxd_get_devices(conn, &devices, &count)
-        if let devErr = devErr {
-            debugLog("[IdeviceGateway] connectDebugProxy get_devices failed")
-            defer { idevice_error_free(devErr) }
-            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to list usbmuxd devices")
-        }
-        guard count > 0, let devicesPtr = devices, let firstDev = devicesPtr.pointee else {
-            throw IdeviceGatewayError(.connectionFailed, reason: "No devices found on usbmuxd")
-        }
-        defer { idevice_usbmuxd_device_list_free(devices, count) }
+        // STEP 1.5: If lockdownd_start_service announced ssl=true
+        // (com.apple.debugserver.DVTSecureSocketProxy), wrap the raw socket
+        // in TLS using the pairing host identity before consuming the handle.
+        // Without this, the device sends ConnectionReset on the first byte.
+        if self.lastDebugserverNeedsSSL {
+            debugLog("[IdeviceGateway] connectDebugProxy() TLS required, handshaking...")
 
-        let deviceID = idevice_usbmuxd_device_get_device_id(firstDev)
-        var debugDevice: OpaquePointer? = nil
-        let connectErr = "minimuxer-debug".withCString { labelPtr in
-            idevice_usbmuxd_connect_to_device(conn, deviceID, port, labelPtr, &debugDevice)
-        }
-        if let connectErr = connectErr {
-            debugLog("[IdeviceGateway] connectDebugProxy connect_to_device failed")
-            defer { idevice_error_free(connectErr) }
-            throw IdeviceGatewayError(.connectionFailed, reason: "Failed to connect to debugserver port \(port)")
-        }
-        guard let debugDevice = debugDevice else {
-            throw IdeviceGatewayError(.connectionFailed, reason: "Debug device handle was nil")
-        }
-        defer { idevice_free(debugDevice) }
+            guard let pairingData = self.pairingFileData else {
+                throw IdeviceGatewayError(.invalidPairingFile, reason: "pairingFileData nil for TLS")
+            }
+            var pf: OpaquePointer? = nil
+            let parseErr = pairingData.withUnsafeBytes { buf in
+                idevice_pairing_file_from_bytes(
+                    buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                    UInt(pairingData.count),
+                    &pf
+                )
+            }
+            if let parseErr = parseErr {
+                defer { safeFreeError(parseErr) }
+                let msg = self.getErrorMessage(from: parseErr)
+                debugLog("[IdeviceGateway] connectDebugProxy pairing parse failed: \(msg)")
+                throw IdeviceGatewayError(.invalidPairingFile, reason: "TLS pairing parse: \(msg)")
+            }
+            guard let pf = pf else {
+                throw IdeviceGatewayError(.invalidPairingFile, reason: "pairingFile parse returned nil")
+            }
+            defer { idevice_pairing_file_free(pf) }
 
+            let sessErr = idevice_start_session(ideviceHandle, pf, true)
+            if let sessErr = sessErr {
+                defer { safeFreeError(sessErr) }
+                let msg = self.getErrorMessage(from: sessErr)
+                debugLog("[IdeviceGateway] idevice_start_session failed: \(msg)")
+                throw IdeviceGatewayError(.serviceError, reason: "TLS handshake failed: \(msg)")
+            }
+            debugLog("[IdeviceGateway] connectDebugProxy TLS handshake OK")
+        }
+
+        // STEP 2: Convert handle -> ReadWriteOpaque stream (CONSUMES handle)
         var stream: OpaquePointer? = nil
-        let streamErr = idevice_to_stream(debugDevice, &stream)
+        let streamErr = idevice_to_stream(ideviceHandle, &stream)
         if let streamErr = streamErr {
-            debugLog("[IdeviceGateway] connectDebugProxy idevice_to_stream failed")
-            defer { idevice_error_free(streamErr) }
-            throw IdeviceGatewayError(.serviceError, reason: "Failed to convert device connection to stream")
+            let msg = self.getErrorMessage(from: streamErr)
+            debugLog("[IdeviceGateway] idevice_to_stream failed: \(msg)")
+            defer { safeFreeError(streamErr) }
+            throw IdeviceGatewayError(.serviceError, reason: "idevice_to_stream failed: \(msg)")
         }
         guard let stream = stream else {
-            throw IdeviceGatewayError(.serviceError, reason: "Stream was nil")
+            throw IdeviceGatewayError(.serviceError, reason: "stream was nil")
         }
+        debugLog("[IdeviceGateway] idevice_to_stream succeeded")
 
-        var debugProxyClient: OpaquePointer? = nil
-        let proxyErr = debug_proxy_new(stream, &debugProxyClient)
+        // STEP 3: Wrap stream -> DebugProxyClient (CONSUMES stream)
+        var client: OpaquePointer? = nil
+        let proxyErr = debug_proxy_new(stream, &client)
         if let proxyErr = proxyErr {
             let msg = self.getErrorMessage(from: proxyErr)
-            debugLog("[IdeviceGateway] connectDebugProxy debug_proxy_new failed: \(msg)")
-            defer { idevice_error_free(proxyErr) }
-            idevice_stream_free(stream)
-            throw IdeviceGatewayError(.serviceError, reason: "Failed to create debug proxy client, error: (\(msg))")
+            debugLog("[IdeviceGateway] debug_proxy_new failed: \(msg)")
+            defer { safeFreeError(proxyErr) }
+            throw IdeviceGatewayError(.serviceError, reason: "debug_proxy_new failed: \(msg)")
         }
-        guard let debugProxyClient = debugProxyClient else {
-            idevice_stream_free(stream)
-            throw IdeviceGatewayError(.serviceError, reason: "Debug proxy client was nil")
+        guard let client = client else {
+            throw IdeviceGatewayError(.serviceError, reason: "debug proxy client was nil")
         }
-        return debugProxyClient
+
+        debugLog("[IdeviceGateway] connectDebugProxy SUCCESS via TCP direct on port \(port)")
+        return client
     }
 
     private func launchAppPre17(appId: String) throws {
         debugLog("[IdeviceGateway] launchAppPre17() called for appId: \(appId)")
-        let (container, bundlePath, _) = try getAppPaths(appId: appId)
+        let (container, bundlePath, exeName) = try getAppPaths(appId: appId)
 
-        let port = try startDebugserverService()
-        let debugProxyClient = try connectDebugProxy(port: port)
-        defer { debug_proxy_free(debugProxyClient) }
+        // FIX: iOS 16 lockdownd needs time to fully close the previous session
+        // (from getAppPaths/isDDIMounted) before accepting a new one.
+        // Without this, lockdownd_start_service fails with SessionInactive.
+        Thread.sleep(forTimeInterval: 0.4)
 
-        verboseLog("[IdeviceGateway] launchAppPre17() configuring debug proxy workspace")
-        try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetMaxPacketSize", args: ["\(MinimuxerConstants.maxPacketSize)"])
-        try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetWorkingDir", args: [container])
-
-        try bundlePath.withCString { bundlePathPtr in
-            var argvptrs: [UnsafePointer<Int8>?] = [bundlePathPtr, bundlePathPtr]
-            var response: UnsafeMutablePointer<Int8>? = nil
-            verboseLog("[IdeviceGateway] launchAppPre17() setting argv for \(bundlePath)")
-            let argvErr = debug_proxy_set_argv(debugProxyClient, &argvptrs, UInt(argvptrs.count), &response)
-            if let argvErr = argvErr {
-                let msg = self.getErrorMessage(from: argvErr)
-                debugLog("[IdeviceGateway] launchAppPre17() debug_proxy_set_argv failed: \(msg)")
-                defer { idevice_error_free(argvErr) }
-                throw IdeviceGatewayError(.serviceError, reason: "Failed to set debug proxy argv, error: (\(msg))")
+        // FIX: retry startDebugserverService up to 3 times with backoff
+        // to work around iOS 16 lockdownd session-race conditions.
+        var port: UInt16 = 0
+        var lastError: Error? = nil
+        for attempt in 1...3 {
+            do {
+                port = try startDebugserverService()
+                lastError = nil
+                break
+            } catch {
+                lastError = error
+                debugLog("[IdeviceGateway] startDebugserverService attempt \(attempt)/3 failed: \(error)")
+                if attempt < 3 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                }
             }
-            if let response = response {
-                let respStr = String(cString: response)
-                verboseLog("[IdeviceGateway] launchAppPre17() argv response: \(respStr)")
-                free(response)
+        }
+        if let err = lastError {
+            throw err
+        }
+
+        let debugProxyClient = try connectDebugProxy(port: port)
+        // PATCH: keep client alive for whole debug session. Do NOT free here.
+        // Reset via disableJIT(appId:).
+        self.activeDebugClient = debugProxyClient
+        var launchSucceeded = false
+        defer {
+            // FIX: on failure never leave a dead client behind (it kept the gateway
+            // in "debug active" state and broke every later service connection).
+            if !launchSucceeded {
+                if let c = self.activeDebugClient {
+                    debug_proxy_free(c)
+                    self.activeDebugClient = nil
+                }
             }
         }
 
-        verboseLog("[IdeviceGateway] launchAppPre17() launching application")
-        try self.sendDebugProxyCommand(client: debugProxyClient, name: "qLaunchSuccess", args: [])
-        try self.sendDebugProxyCommand(client: debugProxyClient, name: "D", args: [])
-        debugLog("[IdeviceGateway] launchAppPre17() app launched successfully")
+        verboseLog("[IdeviceGateway] launchAppPre17() configuring debug proxy workspace")
+        try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetMaxPacketSize:", args: ["\(MinimuxerConstants.maxPacketSize)"])
+        try self.sendDebugProxyCommand(client: debugProxyClient, name: "QSetWorkingDir:", args: [container])
+
+        // Pass standard sandbox environment variables to inferior process.
+        // Debugserver posix_spawn creates a bare environment unless explicitly set,
+        // causing apps like LiveContainer to crash (assert in DyldHooksInit / initGuestSDKVersionInfo)
+        // when attempting to resolve HOME/TMPDIR.
+        let homeDir = container.hasSuffix("/") ? String(container.dropLast()) : container
+        let tmpDir = "\(homeDir)/tmp/"
+        let envVars = [
+            "HOME=\(homeDir)",
+            "TMPDIR=\(tmpDir)",
+            "CFFIXED_USER_HOME=\(homeDir)",
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+        ]
+        for env in envVars {
+            let hex = env.utf8.map { String(format: "%02x", $0) }.joined()
+            var resp = try? self.sendDebugProxyCommand(client: debugProxyClient, name: "QEnvironmentHexEncoded:\(hex)", args: [])
+            if resp == nil || resp?.isEmpty == true {
+                resp = try? self.sendDebugProxyCommand(client: debugProxyClient, name: "QEnvironment:\(env)", args: [])
+            }
+            debugLog("[IdeviceGateway] launchAppPre17() set env \(env) resp: \(resp ?? "(nil)")")
+        }
+
+        guard let exeNameStr = exeName else {
+            throw IdeviceGatewayError(.serviceError, reason: "getAppPaths returned nil exeName for \(appId)")
+        }
+        let exePath = bundlePath.hasSuffix("/") ? bundlePath + exeNameStr : bundlePath + "/" + exeNameStr
+        verboseLog("[IdeviceGateway] launchAppPre17() executable path: \(exePath)")
+
+        // Build A packet manually.
+        // LLDB/debugserver (RNBRemote.cpp HandlePacket_A) parses arglen and argnum with:
+        // strtoul(buf, &c, 10) -> DECIMAL number of HEX characters.
+        // argnum = 0 for the first (and only) argument: the executable path.
+        // Includes trailing NUL (00) byte in the hex payload.
+        // DO NOT send QStartNoAckMode: Stay in standard GDB RSP ACK mode.
+        // Rust FFI (jkcoxson/idevice) handles '+' ACK framing automatically on every packet.
+        let aHex = exePath.utf8.map { String(format: "%02x", $0) }.joined() + "00"
+        let aPacket = "A\(aHex.count),0,\(aHex)"
+        debugLog("[IdeviceGateway] launchAppPre17() A packet FULL: \(aPacket)")
+        let argvResponse = try self.sendDebugProxyCommand(client: debugProxyClient, name: aPacket, args: [])
+        debugLog("[IdeviceGateway] launchAppPre17() argv response: \(argvResponse ?? "(nil)")")
+        if let r = argvResponse, r.hasPrefix("E") {
+            throw IdeviceGatewayError(.serviceError, reason: "debugserver rejected argv (A packet): \(r)")
+        }
+
+        debugLog("[IdeviceGateway] launchAppPre17() launching application")
+        let launchResponse = try self.sendDebugProxyCommand(client: debugProxyClient, name: "qLaunchSuccess", args: [])
+        debugLog("[IdeviceGateway] launchAppPre17() qLaunchSuccess response: \(launchResponse ?? "(nil)")")
+        if let r = launchResponse, r.hasPrefix("E") {
+            throw IdeviceGatewayError(.serviceError, reason: "debugserver failed to launch app: \(r)")
+        }
+
+        if Self.detachAfterLaunch {
+            let detachResponse = try? self.sendDebugProxyCommand(client: debugProxyClient, name: "D", args: [])
+            debugLog("[IdeviceGateway] launchAppPre17() detach response: \(detachResponse ?? "(nil)") - closing debug session")
+            Thread.sleep(forTimeInterval: 0.2)
+            debug_proxy_free(debugProxyClient)
+            self.activeDebugClient = nil
+            self.isDebugActive = false
+            launchSucceeded = true
+            debugLog("[IdeviceGateway] launchAppPre17() app launched and detached successfully")
+        } else {
+            _ = try? self.sendDebugProxyCommand(client: debugProxyClient, name: "c", args: [])
+            launchSucceeded = true
+            debugLog("[IdeviceGateway] launchAppPre17() app launched successfully")
+        }
     }
 
     private func syncDebugApp(appId: String) throws {
@@ -1342,33 +1622,140 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
         }
     }
 
+    private func ensureHeartbeatConnectedLocked() throws -> OpaquePointer {
+        if let client = self.persistentHeartbeatClient {
+            return client
+        }
+
+        try verifyInitialized()
+
+        if pairingFileType == .rppairing {
+            guard let adapter = self.adapter, let handshake = self.handshake else {
+                throw IdeviceGatewayError(.noConnection, reason: "Adapter or handshake is nil")
+            }
+            var client: OpaquePointer? = nil
+            let connectErr = heartbeat_connect_rsd(adapter, handshake, &client)
+            if let connectErr = connectErr {
+                let msg = self.getErrorMessage(from: connectErr)
+                debugLog("[IdeviceGateway] heartbeat_connect_rsd failed: \(msg)")
+                defer { safeFreeError(connectErr) }
+                throw IdeviceGatewayError(.serviceError, reason: "Failed to connect to heartbeat via RSD: (\(msg))")
+            }
+            guard let client = client else {
+                throw IdeviceGatewayError(.noConnection)
+            }
+            self.persistentHeartbeatClient = client
+            return client
+        } else {
+            lockdownLock.lock()
+            defer { lockdownLock.unlock() }
+
+            guard let deviceEndpointIp = deviceEndpointIp else {
+                throw IdeviceGatewayError(.deviceEndpointIpNotAvailable)
+            }
+            guard let pairingFileData = self.pairingFileData else {
+                throw IdeviceGatewayError(.connectionFailed, reason: "pairingFileData is nil")
+            }
+
+            var tempPairingFile: OpaquePointer? = nil
+            let parseErr = pairingFileData.withUnsafeBytes { buf in
+                return idevice_pairing_file_from_bytes(buf.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt(pairingFileData.count), &tempPairingFile)
+            }
+            if let parseErr = parseErr {
+                let msg = self.getErrorMessage(from: parseErr)
+                defer { safeFreeError(parseErr) }
+                throw IdeviceGatewayError(.connectionFailed, reason: "Failed to parse temporary pairing file: \(msg)")
+            }
+            guard let tempPairingFile = tempPairingFile else {
+                throw IdeviceGatewayError(.connectionFailed, reason: "Temporary pairing file was nil")
+            }
+
+            var provider: OpaquePointer? = nil
+            let provErr = try withSockaddr(ip: deviceEndpointIp, port: MinimuxerConstants.lockdowndPort) { sockaddrPtr, _ in
+                sockaddrPtr.withMemoryRebound(to: idevice_sockaddr.self, capacity: 1) { reboundPtr in
+                    return idevice_tcp_provider_new(reboundPtr, tempPairingFile, MinimuxerConstants.appName, &provider)
+                }
+            }
+            if let provErr = provErr {
+                let msg = self.getErrorMessage(from: provErr)
+                defer { safeFreeError(provErr) }
+                throw IdeviceGatewayError(.connectionFailed, reason: "Failed to create TCP provider: \(msg)")
+            }
+            guard let provider = provider else {
+                throw IdeviceGatewayError(.connectionFailed, reason: "TCP Provider was nil")
+            }
+
+            var client: OpaquePointer? = nil
+            let connectErr = heartbeat_connect(provider, &client)
+            if let connectErr = connectErr {
+                idevice_provider_free(provider)
+                let msg = self.getErrorMessage(from: connectErr)
+                defer { safeFreeError(connectErr) }
+                throw IdeviceGatewayError(.serviceError, reason: "Failed to connect to heartbeat: (\(msg))")
+            }
+            guard let client = client else {
+                idevice_provider_free(provider)
+                throw IdeviceGatewayError(.noConnection)
+            }
+
+            self.persistentHeartbeatProvider = provider
+            self.persistentHeartbeatClient = client
+            return client
+        }
+    }
+
     private func syncPerformHeartbeat(interval: UInt64, newInterval: UnsafeMutablePointer<UInt64>) throws {
-       debugLog("[IdeviceGateway] performHeartbeat() called, interval: \(interval)")
-       try verifyInitialized()
-       try performWithEitherService(
-           connectRP: heartbeat_connect_rsd,
-           connectLockdown: heartbeat_connect,
-           cleanup: heartbeat_client_free,
-           serviceName: "heartbeat"
-       ) { client in
-           verboseLog("[IdeviceGateway] performHeartbeat() calling heartbeat_get_marco")
-           let getErr = heartbeat_get_marco(client, interval, newInterval)
-           if let getErr = getErr {
-               let msg = self.getErrorMessage(from: getErr)
-               debugLog("[IdeviceGateway] performHeartbeat() heartbeat_get_marco failed: \(msg)")
-               defer { idevice_error_free(getErr) }
-               throw IdeviceGatewayError(.serviceError, reason: "Heartbeat receive failed, error: (\(msg))")
-           }
-           verboseLog("[IdeviceGateway] performHeartbeat() calling heartbeat_send_polo")
-           let sendErr = heartbeat_send_polo(client)
-           if let sendErr = sendErr {
-               let msg = self.getErrorMessage(from: sendErr)
-               debugLog("[IdeviceGateway] performHeartbeat() heartbeat_send_polo failed: \(msg)")
-               defer { idevice_error_free(sendErr) }
-               throw IdeviceGatewayError(.serviceError, reason: "Heartbeat send failed, error: (\(msg))")
-           }
-           debugLog("[IdeviceGateway] performHeartbeat() succeeded, newInterval: \(newInterval.pointee)")
-       }
+        debugLog("[IdeviceGateway] performHeartbeat() called, interval: \(interval)")
+        // Skip network activity while a debug session is active. Opening a new
+        // lockdown/heartbeat TCP session mid-debug disrupts the DVTSecureSocketProxy
+        // TLS connection (debugserver drops the peer mid-argv).
+        if self.isDebugActive {
+            verboseLog("[IdeviceGateway] performHeartbeat() skipped (debug active)")
+            newInterval.pointee = interval
+            return
+        }
+
+        heartbeatLock.lock()
+        defer { heartbeatLock.unlock() }
+
+        // If not connected yet and gateway is busy with another operation,
+        // do not establish a new connection on port 62078 right now.
+        if self.persistentHeartbeatClient == nil && self.isBusy {
+            verboseLog("[IdeviceGateway] performHeartbeat() skipped connecting (gateway busy)")
+            newInterval.pointee = interval
+            return
+        }
+
+        let client: OpaquePointer
+        do {
+            client = try ensureHeartbeatConnectedLocked()
+        } catch {
+            debugLog("[IdeviceGateway] performHeartbeat() failed to connect: \(error)")
+            closePersistentHeartbeatLocked()
+            throw error
+        }
+
+        verboseLog("[IdeviceGateway] performHeartbeat() calling heartbeat_get_marco")
+        let getErr = heartbeat_get_marco(client, interval, newInterval)
+        if let getErr = getErr {
+            let msg = self.getErrorMessage(from: getErr)
+            debugLog("[IdeviceGateway] performHeartbeat() heartbeat_get_marco failed: \(msg)")
+            defer { safeFreeError(getErr) }
+            closePersistentHeartbeatLocked()
+            throw IdeviceGatewayError(.serviceError, reason: "Heartbeat receive failed, error: (\(msg))")
+        }
+
+        verboseLog("[IdeviceGateway] performHeartbeat() calling heartbeat_send_polo")
+        let sendErr = heartbeat_send_polo(client)
+        if let sendErr = sendErr {
+            let msg = self.getErrorMessage(from: sendErr)
+            debugLog("[IdeviceGateway] performHeartbeat() heartbeat_send_polo failed: \(msg)")
+            defer { safeFreeError(sendErr) }
+            closePersistentHeartbeatLocked()
+            throw IdeviceGatewayError(.serviceError, reason: "Heartbeat send failed, error: (\(msg))")
+        }
+
+        debugLog("[IdeviceGateway] performHeartbeat() succeeded, newInterval: \(newInterval.pointee)")
     }
 
     private func syncMountPersonalizedDdi(image: Data, trustcache: Data, manifest: Data) throws {
@@ -1441,6 +1828,8 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
     }
 
     private func mountPersonalizedDdiIdevice(image: Data, trustcache: Data, manifest: Data) throws {
+        lockdownLock.lock()
+        defer { lockdownLock.unlock() }
         verboseLog("[IdeviceGateway] mountPersonalizedDdiIdevice() starting traditional/TCP provider mounting")
 
         guard let deviceEndpointIp = deviceEndpointIp else {
@@ -1613,8 +2002,55 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             cleanup: image_mounter_free,
             serviceName: "image mounter"
         ) { client in
-            try isDeveloperDiskImageMounted(mounterClient: client)
+            if self.pairingFileType == .lockdown {
+                // Classic Developer DDI (iOS 16 and below)
+                if try self.isLegacyDeveloperImageMounted(mounterClient: client) {
+                    debugLog("[IdeviceGateway] isDDIMounted() legacy Developer DDI is mounted")
+                    return true
+                }
+                debugLog("[IdeviceGateway] isDDIMounted() no DDI is mounted")
+                return false
+            } else {
+                // Personalized DDI (iOS 17+)
+                if try self.isDeveloperDiskImageMounted(mounterClient: client) {
+                    debugLog("[IdeviceGateway] isDDIMounted() personalized DDI is mounted")
+                    return true
+                }
+                // Classic Developer DDI fallback
+                if try self.isLegacyDeveloperImageMounted(mounterClient: client) {
+                    debugLog("[IdeviceGateway] isDDIMounted() legacy Developer DDI is mounted")
+                    return true
+                }
+                debugLog("[IdeviceGateway] isDDIMounted() no DDI is mounted")
+                return false
+            }
         }
+    }
+
+    // Detects the classic (non-personalized) Developer disk image used by iOS 16 and below.
+    // The device answers LookupImage("Developer") with an ImageSignature only when it is mounted.
+    private func isLegacyDeveloperImageMounted(mounterClient: OpaquePointer) throws -> Bool {
+        var sigPtr: UnsafeMutablePointer<UInt8>? = nil
+        var sigLen: Int = 0   // if the compiler complains about Int vs UInt here, change Int to UInt
+        let err = "Developer".withCString { typePtr in
+            image_mounter_lookup_image(mounterClient, typePtr, &sigPtr, &sigLen)
+        }
+        if let err = err {
+            // An error here means "not mounted" (or lookup unsupported)
+            let lookupMsg = getErrorMessage(from: err)
+            verboseLog("[IdeviceGateway] isLegacyDeveloperImageMounted() lookup returned error: \(lookupMsg)")
+            safeFreeError(err)
+            // FIX: transport errors must surface (and be retried), only a real device answer means "not mounted".
+            if isTransportErrorText(lookupMsg) {
+                throw IdeviceGatewayError(.serviceError, reason: "Failed to look up Developer image, error: (\(lookupMsg))")
+            }
+            return false
+        }
+        let mounted = sigLen > 0
+        if let p = sigPtr {
+            idevice_data_free(p, UInt(sigLen))
+        }
+        return mounted
     }
 
     private func isDeveloperDiskImageMounted(mounterClient: OpaquePointer) throws -> Bool {
@@ -1631,6 +2067,10 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             }
             debugLog("[IdeviceGateway] copy_devices failed: code=\(code), subCode=\(subCode), message=\(msg)")
             defer { idevice_error_free(err) }
+            // FIX: a dropped connection is NOT "no DDI mounted".
+            if isTransportErrorText(msg) {
+                throw IdeviceGatewayError(.serviceError, reason: "Failed to query mounted images, error: (\(msg))")
+            }
             return false
         }
         guard let devicesPtr = devicesPtr, devicesLen > 0 else {
@@ -1686,6 +2126,12 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI, @uncheck
             cleanup: image_mounter_free,
             serviceName: "image mounter"
         ) { client in
+            // 0. Skip everything if a classic Developer image is already mounted
+            if try self.isLegacyDeveloperImageMounted(mounterClient: client) {
+                debugLog("[IdeviceGateway] mountDeveloperImage() Developer image already mounted. Bypassing upload and mount.")
+                return
+            }
+
             // 1. Upload
             try image.withUnsafeBytes { imgBuf in
                 try signature.withUnsafeBytes { sigBuf in
@@ -2354,12 +2800,36 @@ extension IdeviceGateway {
     }
 
     public func debugApp(appId: String) async throws {
+        // PATCH: pre-cleanup any previous debug session before starting new one.
+        // Without this, isDebugActive stays true forever and lockdownd services
+        // held by the old debugserver session conflict with image mounter.
+        if let oldClient = self.activeDebugClient {
+            _ = try? self.sendDebugProxyCommand(client: oldClient, name: "D", args: [])
+            debug_proxy_free(oldClient)
+            self.activeDebugClient = nil
+        }
+        self.isDebugActive = false
+        // Small settle delay so device releases lockdownd service handles.
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // All paths go through syncDebugApp -> launchAppPre17 -> connectDebugProxy.
+        // When lockdownd_start_service reports ssl=true (DVTSecureSocketProxy on
+        // iOS 16+), connectDebugProxy transparently performs the TLS handshake
+        // via idevice_start_session using the pairing host identity.
+        self.isDebugActive = true
+        defer {
+            self.isDebugActive = false
+        }
         try await withFFIDispatch {
             try self.syncDebugApp(appId: appId)
         }
     }
 
     public func debugProcess(pid: UInt32) async throws {
+        self.isDebugActive = true
+        defer {
+            self.isDebugActive = false
+        }
         try await withFFIDispatch {
             try self.syncDebugProcess(pid: pid)
         }
@@ -2461,5 +2931,19 @@ extension IdeviceGateway {
         try await withFFIDispatch {
             try self.syncWipeContainer(identifier: identifier)
         }
+    }
+
+    /// PATCH: explicitly send "D" and free debug_proxy client.
+    /// Called when user disables JIT for an app.
+    func disableJIT(appId: String) async {
+        guard let client = self.activeDebugClient else {
+            self.isDebugActive = false
+            return
+        }
+        _ = try? self.sendDebugProxyCommand(client: client, name: "D", args: [])
+        debug_proxy_free(client)
+        self.activeDebugClient = nil
+        self.isDebugActive = false
+        NSLog("[IdeviceGateway] disableJIT called for \(appId) - client freed")
     }
 }

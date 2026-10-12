@@ -66,14 +66,14 @@ final internal class Mounter {
 
     private func performMount(major: Int, iosVersion: String?, dmgDocsPath: String) async throws {
         if major < 17, let iosVersion {
-            // Pre-17: lockdown only — load DMG + signature, mount via imagemounter
+            // iOS 15 and below: legacy DDI mount (DMG + signature)
             let (dmgData, sigData) = try loadPre17Image(iosVersion: iosVersion, dmgDocsPath: dmgDocsPath)
             verboseLog("[minimuxer] Uploading and mounting image (dmg=\(dmgData.count) bytes, sig=\(sigData.count) bytes)...")
             try await self.gateway.mountDeveloperImage(image: dmgData, signature: sigData)
             verboseLog("[minimuxer] Successfully mounted the image")
         } else {
-            // Post-17: both RP and lockdown use mountPersonalizedDdi.
-            // IdeviceGateway handles the RP vs lockdown distinction internally.
+            // iOS 16+ : both RP and lockdown use personalized DDI
+            // IdeviceGateway handles the RP vs lockdown distinction internally
             let (imageData, trustcacheData, manifestData) = try loadPost17Image(dmgDocsPath: dmgDocsPath)
             debugLog(
                 "[minimuxer] Mounting DDI " +

@@ -13,7 +13,7 @@ public import MinimuxerCommon
 public struct MinimuxerServiceError: Error, CustomStringConvertible {
     public let component: MinimuxerComponent
     public let error: Error
-    
+
     public var description: String {
         return "[\(component.rawValue)] \(error.localizedDescription)"
     }
@@ -80,7 +80,7 @@ public enum MinimuxerError: Error, Equatable, CustomStringConvertible, Localized
         case .noVPN(let r): return "NoVPN: \(r)"
         case .notStarted(let r): return "NotStarted: \(r)"
         case .pairingNotLoaded(let r): return "PairingNotLoaded: \(r)"
-        case .restartAlreadyInProgressError(let r): return "RestartAlreadyInProgressError: \(r)"
+        case.restartAlreadyInProgressError(let r): return "RestartAlreadyInProgressError: \(r)"
         case .invalidVPN(let r): return "InvalidVPN: \(r)"
         case .invalidPairing(let proto, let reason): return "InvalidPairing(protocol: \(proto), reason: \(reason))"
         case .muxerNotListening(let r): return "MuxerNotListening: \(r)"
@@ -142,11 +142,22 @@ extension DeviceGatewayError {
         (code == .connectionFailed || code == .noConnection) && !isVPNDrop
     }
 
-    func asMinimuxerError(protocol activeProtocol: PairingProtocol, catchAll: (String) -> MinimuxerError) -> MinimuxerError {
+    // If heartbeat never succeeded, this is more likely a dead
+    // Lockdown session than a VPN drop. Classify as .noDevice so caller retries.
+    func asMinimuxerError(
+        protocol activeProtocol: PairingProtocol,
+        heartbeatHasSucceeded: Bool = true,
+        catchAll: (String) -> MinimuxerError
+    ) -> MinimuxerError {
         if code == .invalidPairingFile {
             return .invalidPairing(protocol: activeProtocol, reason: reason)
         }
         if isVPNDrop {
+            if !heartbeatHasSucceeded {
+                return .noDevice(
+                    "Lockdown session lost before heartbeat stabilized: \(reason)"
+                )
+            }
             return .invalidVPN(reason)
         }
         return catchAll(reason)
